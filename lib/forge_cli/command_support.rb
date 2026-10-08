@@ -32,5 +32,32 @@ module ForgeCli
     rescue OptionParser::ParseError => e
       raise Error, "#{e.message}\n#{parser.banner}"
     end
+
+    # The single required positional argument, or a usage error.
+    def self.one_arg!(parser, argv, name)
+      args = parse!(parser, argv, max_args: 1)
+      raise Error, "missing #{name}\n#{parser.banner}" if args.empty?
+
+      args.first
+    end
+
+    # Parses a count flag value within min..max.
+    def self.count(value, flag:, min: 1, max: nil)
+      text = value.to_s.strip
+      number = text.match?(/\A\d+\z/) ? text.to_i : nil
+      if number.nil? || number < min || (max && number > max)
+        range = max ? "#{min}..#{max}" : ">= #{min}"
+        raise Error, "#{flag} must be an integer in #{range}, got '#{value}'"
+      end
+      number
+    end
+
+    # The last n lines of content; n = 0 keeps everything.
+    def self.tail(content, lines)
+      text = content.to_s
+      return text if lines.zero?
+
+      text.lines.last(lines).join
+    end
   end
 end

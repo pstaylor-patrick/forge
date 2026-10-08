@@ -88,4 +88,108 @@ describe ForgeCli::Context do
       assert_equal 1, ctx.client.calls.count { |kind, req| kind == :fetch_all && req.path.end_with?("/servers") }
     end
   end
+
+  describe "#site" do
+    def site(id, name, server_id: nil)
+      record = { id: id.to_s, type: "sites", attributes: { name: name } }
+      record[:relationships] = { server: { data: { type: "servers", id: server_id.to_s } } } if server_id
+      record
+    end
+
+    def site_context(org_sites:, server_sites: {}, servers: [server(10, "web-1"), server(11, "web-2")])
+      fetch_all = { "/orgs/my-org/servers" => servers, "/orgs/my-org/sites" => org_sites }
+      server_sites.each { |server_id, records| fetch_all["/orgs/my-org/servers/#{server_id}/sites"] = records }
+      ForgeCli::Context.new(client: FakeClient.new(fetch_all: fetch_all), formatter: nil, org: "my-org", env: {})
+    end
+
+    it "resolves a site name to its server from the org listing" do
+      ctx = site_context(org_sites: [site(100, "example.com", server_id: 11), site(101, "api.example.com", server_id: 10)])
+      assert_equal({ server_id: 11, site_id: 100, name: "example.com" }, ctx.site("example.com"))
+      assert_equal 10, ctx.site("101")[:server_id]
+    end
+
+    it "asks the org listing for relationships.server" do
+      ctx = site_context(org_sites: [site(100, "example.com", server_id: 11)])
+      ctx.site("example.com")
+      request = ctx.client.calls.map(&:last).find { |r| r.path == "/orgs/my-org/sites" }
+      assert_equal "server", request.query["include"]
+    end
+
+    it "lists org sites once per invocation" do
+      ctx = site_context(org_sites: [site(100, "example.com", server_id: 11)])
+      ctx.site("example.com")
+      ctx.site("100")
+      assert_equal 1, ctx.client.calls.count { |_, req| req.path == "/orgs/my-org/sites" }
+    end
+
+    it "falls back to per-server listings when relationships.server is missing" do
+      ctx = site_context(org_sites: [site(100, "example.com")],
+                         server_sites: { 10 => [site(101, "api.example.com")], 11 => [site(100, "example.com")] })
+      assert_equal({ server_id: 11, site_id: 100, name: "example.com" }, ctx.site("example.com"))
+    end
+
+    it "narrows to one server's sites with a server query" do
+      ctx = site_context(org_sites: [], server_sites: { 10 => [site(101, "example.com")] })
+      assert_equal({ server_id: 10, site_id: 101, name: "example.com" }, ctx.site("example.com", server_query: "web-1"))
+      refute(ctx.client.calls.any? { |_, req| req.path == "/orgs/my-org/sites" })
+    end
+
+    it "raises NotFoundError listing site names" do
+      ctx = site_context(org_sites: [site(100, "example.com", server_id: 11)])
+      error = assert_raises(ForgeCli::NotFoundError) { ctx.site("nope.example.com") }
+      assert_includes error.message, "available: example.com"
+    end
+
+    it "raises AmbiguousError when two servers host the same name" do
+      ctx = site_context(org_sites: [site(100, "example.com", server_id: 10), site(200, "example.com", server_id: 11)])
+      error = assert_raises(ForgeCli::AmbiguousError) { ctx.site("example.com") }
+      assert_includes error.message, "100  example.com"
+      assert_equal 200, ctx.site("200")[:site_id]
+    end
+  end
+
+  describe "child lookups" do
+    def named(id, name, type) = { id: id.to_s, type: type, attributes: { name: name } }
+
+    def child_context
+      base = "/orgs/my-org/servers/10"
+      client = FakeClient.new(fetch_all: {
+                                "#{base}/sites/100/domains" => [named(1, "example.com", "domains"),
+                                                                named(2, "www.example.com", "domains")],
+                                "#{base}/database/schemas" => [named(3, "app_db", "databases")],
+                                "#{base}/database/users" => [named(4, "app_user", "databaseUsers")],
+                                "#{base}/firewall-rules" => [named(5, "ssh-office", "firewallRules")],
+                                "#{base}/scheduled-jobs" => [named(6, "Nightly", "scheduledJobs")],
+                                "#{base}/sites/100/scheduled-jobs" => [named(7, "Site job", "scheduledJobs")],
+                                "#{base}/background-processes" => [
+                                  { id: "8", type: "backgroundProcesses", attributes: { command: "php artisan horizon" } }
+                                ]
+                              })
+      ForgeCli::Context.new(client: client, formatter: nil, org: "my-org", env: {})
+    end
+
+    it "resolves each child by name or id" do
+      ctx = child_context
+      site = { server_id: 10, site_id: 100, name: "example.com" }
+      assert_equal 2, ctx.domain(site, "www.example.com")[:id]
+      assert_equal 1, ctx.domain(site, "1")[:id]
+      assert_equal 3, ctx.schema(10, "app_db")[:id]
+      assert_equal 4, ctx.db_user(10, "APP_USER")[:id]
+      assert_equal 5, ctx.firewall_rule(10, "ssh-office")[:id]
+      assert_equal 6, ctx.job(10, "Nightly")[:id]
+      assert_equal 7, ctx.job(10, "7", site: site)[:id]
+    end
+
+    it "resolves daemons by id only" do
+      ctx = child_context
+      assert_equal "php artisan horizon", ctx.daemon(10, "8")[:command]
+      assert_raises(ForgeCli::NotFoundError) { ctx.daemon(10, "9") }
+      assert_raises(ForgeCli::Error) { ctx.daemon(10, "horizon") }
+    end
+
+    it "names the kind when a child is missing" do
+      error = assert_raises(ForgeCli::NotFoundError) { child_context.schema(10, "nope") }
+      assert_includes error.message, "no database matches 'nope'"
+    end
+  end
 end

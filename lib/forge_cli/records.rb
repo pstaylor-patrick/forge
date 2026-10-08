@@ -28,6 +28,14 @@ module ForgeCli
       summary.empty? ? nil : summary
     end
 
+    # "url (branch)" from attributes.repository, or nil when no repository.
+    def repository_summary(record)
+      repo = record&.dig(:attributes, :repository)
+      return nil unless repo.is_a?(Hash) && !repo[:url].to_s.empty?
+
+      repo[:branch].to_s.empty? ? repo[:url].to_s : "#{repo[:url]} (#{repo[:branch]})"
+    end
+
     def integer_id(value)
       value.is_a?(String) && value.match?(/\A\d+\z/) ? value.to_i : value
     end

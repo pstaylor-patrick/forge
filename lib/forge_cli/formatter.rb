@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "env_file"
 require_relative "records"
 
 module ForgeCli
@@ -11,21 +12,36 @@ module ForgeCli
       puts JSON.pretty_generate({ ok: true, command: command, data: data })
     end
 
-    def self.list(command, records, columns: nil) = emit(command, records)
-    def self.show(command, record, fields: nil) = emit(command, record)
-    def self.text(command, content, meta: {}) = emit(command, { content: content, **meta })
+    def self.list(command, records, columns: nil, derive: nil) = emit(command, records)
+    def self.show(command, record, fields: nil, derive: nil) = emit(command, record)
+    def self.text(command, content, meta: {}, footer: []) = emit(command, { content: content, **meta })
+
+    # Masked unless revealed: entries carry key names, and values only when
+    # revealed. Raw content is included only when revealed.
+    def self.env(command, site_name, content, revealed:)
+      entries = EnvFile.entries(content).select { |e| e[:type] == :entry }
+      if revealed
+        emit(command, { site: site_name, revealed: true, content: content,
+                        entries: entries.map { |e| { key: e[:key], value: e[:value] } } })
+      else
+        emit(command, { site: site_name, revealed: false,
+                        entries: entries.map { |e| { key: e[:key], value: e[:value].empty? ? "" : EnvFile::MASK } } })
+      end
+    end
   end
 
   # Human output. Records arrive raw (JSON:API) and are flattened here.
   # A field missing from human output is a formatter bug: fix it here.
+  # derive: optional ->(raw_record) { Hash } merged over the flattened row, for
+  # columns the API nests or puts in relationships (server_id, commit summary).
   module Formatter
     RESET = "\e[0m"
     BOLD = "\e[1m"
     DIM = "\e[2m"
 
     # Count line, then aligned columns.
-    def self.list(command, records, columns:)
-      rows = records.map { |r| Records.flatten(r) }
+    def self.list(command, records, columns:, derive: nil)
+      rows = records.map { |r| row(r, derive) }
       noun = rows.size == 1 ? command.sub(/s\z/, "") : command
       puts style("#{rows.size} #{noun}", DIM)
       return if rows.empty?
@@ -38,19 +54,31 @@ module ForgeCli
     end
 
     # "field: value" lines with aligned labels.
-    def self.show(command, record, fields:)
-      row = Records.flatten(record)
+    def self.show(command, record, fields:, derive: nil)
+      row = row(record, derive)
       width = fields.map { |f| f.to_s.length }.max.to_i + 1
       fields.each do |field|
         puts "#{style("#{field}:".ljust(width), DIM)} #{cell(row[field])}"
       end
     end
 
-    # Verbatim content (logs, scripts).
-    def self.text(command, content, meta: {})
+    # Verbatim content (logs, scripts) on stdout. footer: meta keys printed as
+    # "key: value" on stderr, so stdout stays exactly the content.
+    def self.text(command, content, meta: {}, footer: [])
       text = content.to_s
       print text
       puts unless text.empty? || text.end_with?("\n")
+      footer.each { |key| $stderr.puts "#{key}: #{cell(meta[key])}" }
+    end
+
+    # The .env with values masked, or raw when revealed.
+    def self.env(command, site_name, content, revealed:)
+      text(command, revealed ? content : EnvFile.mask(content))
+    end
+
+    def self.row(record, derive)
+      flat = Records.flatten(record)
+      derive ? flat.merge(derive.call(record)) : flat
     end
 
     def self.cell(value)
@@ -74,6 +102,6 @@ module ForgeCli
       $stdout.tty? && ENV["NO_COLOR"].to_s.empty?
     end
 
-    private_class_method :align, :style, :color?
+    private_class_method :row, :align, :style, :color?
   end
 end

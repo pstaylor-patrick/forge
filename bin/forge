@@ -26,7 +26,10 @@ require "forge_cli/formatter"
 require "forge_cli/version"
 
 COMMANDS = %w[
-  me orgs servers server
+  me orgs
+  servers server
+  sites site deploys deploy-log deploy-status deploy-script env domains certs logs
+  dbs db-users daemons daemon-log jobs job-output firewall events event-output server-log
 ].freeze
 
 # Commands that change Forge. Empty until the write path lands.
@@ -50,7 +53,35 @@ def usage(status = 1)
       servers                         Every server in the org
       server [SERVER]                 One server's details (name or id; -S also works)
 
+    Sites:
+      sites [-S SERVER]               Every site in the org (or on one server)
+      site SITE                       One site's details
+      deploys SITE [-n N]             Recent deployments, newest first (default 10, max 100)
+      deploy-log SITE [DEPLOYMENT_ID] A deployment's output (default: the latest)
+      deploy-status SITE              Running deployment status, or idle
+      deploy-script SITE              The deploy script (auto_source goes to stderr)
+      env SITE [--reveal]             The .env with values masked; --reveal prints raw values
+      domains SITE                    The site's domains
+      certs SITE                      The site's SSL certificates
+      logs SITE [--type T] [--tail N] Site log: application (default), nginx-access, nginx-error;
+                                      last N lines (default 200, 0 = all)
+
+    Server resources (all take -S SERVER):
+      dbs                             Database schemas
+      db-users                        Database users
+      daemons                         Background processes
+      daemon-log DAEMON_ID            A background process's log
+      jobs [--site SITE]              Scheduled jobs on the server (or on one site)
+      job-output JOB [--site SITE]    A scheduled job's output (JOB is a name or id)
+      firewall                        Firewall rules
+      events [-n N]                   Recent events, newest first (org-wide unless -S; default 20)
+      event-output EVENT_ID           An event's output
+      server-log KEY [--tail N]       A server log, e.g. nginx-access, nginx-error, php-8.4,
+                                      redis-server, database-mysql (default 200 lines, 0 = all)
+
     SERVER defaults to FORGE_SERVER, else the org's only server.
+    SITE is a site name (its domain) or id; site commands find its server
+    themselves, and -S only narrows the lookup.
 
     Environment:
       FORGE_API_KEY   API token (loaded from the repo .env symlink)

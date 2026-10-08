@@ -51,4 +51,11 @@ describe ForgeCli::Resolver do
     orgs = [{ id: 9, slug: "my-org" }]
     assert_equal 9, ForgeCli::Resolver.pick(orgs, "my-org", kind: "org", key: :slug)[:id]
   end
+
+  it "resolves site domains exactly, never by suffix or prefix" do
+    sites = [{ id: 20, name: "example.com" }, { id: 21, name: "api.example.com" }]
+    assert_equal 20, ForgeCli::Resolver.pick(sites, "Example.COM", kind: "site")[:id]
+    assert_equal 21, ForgeCli::Resolver.pick(sites, "api.example.com", kind: "site")[:id]
+    assert_raises(ForgeCli::NotFoundError) { ForgeCli::Resolver.pick(sites, "example", kind: "site") }
+  end
 end

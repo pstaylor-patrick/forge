@@ -45,4 +45,13 @@ describe ForgeCli::Records do
     assert_nil R.dig_commit({ attributes: { commit: nil } })
     assert_nil R.dig_commit({ attributes: { commit: { hash: nil, message: nil } } })
   end
+
+  it "summarizes a site repository as url plus branch" do
+    repo = { provider: "github", url: "https://github.com/acme/app", branch: "main", status: "installed" }
+    assert_equal "https://github.com/acme/app (main)", R.repository_summary({ attributes: { repository: repo } })
+    assert_equal "https://github.com/acme/app",
+                 R.repository_summary({ attributes: { repository: repo.merge(branch: nil) } })
+    assert_nil R.repository_summary({ attributes: { repository: repo.merge(url: nil) } })
+    assert_nil R.repository_summary({ attributes: {} })
+  end
 end
