@@ -102,8 +102,15 @@ Every write takes `-d/--dry-run`, which prints the method, path, and body and se
 | `db-user-create NAME [--databases a,b] [--read-only] [--password-stdin]` | Creates a database user (password required) with access to the listed databases (names or ids), read-only with `--read-only` | no |
 | `db-user-update USER [--databases a,b] [--password-stdin]` | Changes a database user. `--databases` **replaces** the user's grants with exactly that list (`--databases ''` removes every grant); `--password-stdin` sets a new password. Give at least one | no |
 | `db-user-delete USER` | Removes a database user by name or id | yes (database user name) |
+| `site-create DOMAIN [--type T] [--php phpNN] [--web-dir DIR] [--repo OWNER/NAME [--branch B] [--provider github\|gitlab\|bitbucket]] [--isolated --isolated-user U] [--zero-downtime] [--wildcard] [--www from-www\|to-www\|none]` | Creates a site on a domain you own (sent as `domain_mode: custom`, `name: DOMAIN`). Type default `laravel`; web directory default `/public` for `laravel`, `symfony`, and `statamic`, otherwise Forge's default; provider default `github` when `--repo` is given | no |
+| `site-update SITE [--php phpNN] [--type T] [--directory DIR] [--root-path P] [--branch B] [--[no-]push-to-deploy] [--deployment-retention N]` | Changes a site's settings; only the flags given are sent. Give at least one | no |
+| `site-delete SITE` | Deletes a site and its files, then opens the server page | yes (site name) |
+| `domain-create SITE DOMAIN [--www from-www\|to-www\|none] [--wildcard]` | Adds a domain to a site (redirect default `none`; wildcard off unless `--wildcard`) | no |
+| `domain-delete SITE DOMAIN` | Removes a domain by name or id | yes (domain name) |
+| `cert-issue SITE DOMAIN [--verification http-01\|dns-01] [--key-type ecdsa\|rsa]` | Requests a Let's Encrypt certificate for a domain (defaults `http-01`, `ecdsa`). Other certificate types are not supported | no |
+| `cert-delete SITE DOMAIN CERT_ID` | Removes a certificate from a domain; `CERT_ID` is an id from `forge certs SITE` that belongs to that domain (an unknown id exits 3 and lists the domain's certificate ids) | yes (domain name) |
 
-The server and database writes take `-S SERVER`. Service actions:
+The server, database, and `site-create` writes take `-S SERVER`; the other site writes find the server from the site. Service actions:
 
 | Service | Actions |
 |---------|---------|
@@ -179,6 +186,10 @@ bin/forge db-create app_db -d
 printf "%s\n" "$DB_PASSWORD" | bin/forge db-user-create app_user --databases app_db --password-stdin -d
 bin/forge db-user-update app_user --databases app_db,reports_db -d
 bin/forge db-delete app_db -d
+bin/forge site-create example.com --php php84 --repo acme/app --branch main -d
+bin/forge site-update example.com --php php84 -d
+bin/forge domain-create example.com www.example.com --www to-www -d
+bin/forge cert-issue example.com www.example.com -d
 ```
 
 ### Environment

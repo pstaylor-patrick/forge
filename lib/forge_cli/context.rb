@@ -58,6 +58,16 @@ module ForgeCli
     # -- child lookups (name or id) ------------------------------------------
 
     def domain(site, query) = pick_child(Endpoints.domains(org, site[:server_id], site[:site_id]), query, "domain")
+    # A certificate on one of the site's domains, by id (certificates have no
+    # name attribute). The listing is not paginated.
+    def domain_certificate(site, domain_id, id)
+      raise Error, "certificate must be a numeric id, got '#{id}'" unless id.to_s.strip.match?(/\A\d+\z/)
+
+      request = Endpoints.domain_certificates(org, site[:server_id], site[:site_id], domain_id)
+      records = Array(client.fetch(request)[:data]).map { |r| Records.flatten(r) }
+      Resolver.pick(records, id, kind: "certificate", key: :id)
+    end
+
     def schema(server_id, query) = pick_child(Endpoints.schemas(org, server_id), query, "database")
     def db_user(server_id, query) = pick_child(Endpoints.db_users(org, server_id), query, "database user")
 

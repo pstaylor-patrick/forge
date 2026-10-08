@@ -14,7 +14,7 @@ describe "Endpoints against docs/forge-openapi.json" do
   EP = ForgeCli::Endpoints
 
   # Module functions that build parts of requests rather than requests.
-  HELPERS = %i[compact_body events_query get job_body org_path segment server_path site_path write].freeze
+  HELPERS = %i[check_site_keys! compact_body events_query get job_body org_path segment server_path site_path write].freeze
 
   # Query keys the API honors but the snapshot does not declare.
   UNDECLARED_QUERY = { org_site: ["include"] }.freeze
@@ -102,7 +102,34 @@ describe "Endpoints against docs/forge-openapi.json" do
     update_db_user: [-> { EP.update_db_user("my-org", 10, 70, password: "placeholder") },
                      -> { EP.update_db_user("my-org", 10, 70, database_ids: [60]) },
                      -> { EP.update_db_user("my-org", 10, 70, password: "placeholder", database_ids: []) }],
-    delete_db_user: [-> { EP.delete_db_user("my-org", 10, 70) }]
+    delete_db_user: [-> { EP.delete_db_user("my-org", 10, 70) }],
+    create_site: [-> { EP.create_site("my-org", 10, type: "laravel", name: "example.com") }] +
+      EP::SITE_TYPES.map { |type| -> { EP.create_site("my-org", 10, type: type, name: "example.com") } } +
+      EP::SOURCE_CONTROL_PROVIDERS.map do |provider|
+        lambda {
+          EP.create_site("my-org", 10, type: "laravel", name: "example.com", php_version: "php84",
+                                       web_directory: "/public", source_control_provider: provider,
+                                       repository: "acme/app", branch: "main", is_isolated: true,
+                                       isolated_user: "app", zero_downtime_deployments: true,
+                                       allow_wildcard_subdomains: true, www_redirect_type: "from-www")
+        }
+      end,
+    update_site: [-> { EP.update_site("my-org", 10, 20, php_version: "php84") },
+                  lambda {
+                    EP.update_site("my-org", 10, 20, php_version: "php83", type: "laravel", directory: "/public",
+                                                     root_path: "/home/forge/example.com", repository_branch: "main",
+                                                     push_to_deploy: false, deployment_retention: 5)
+                  }],
+    delete_site: [-> { EP.delete_site("my-org", 10, 20) }],
+    create_domain: EP::WWW_REDIRECT_TYPES.map do |www|
+      -> { EP.create_domain("my-org", 10, 20, name: "www.example.com", www_redirect_type: www, allow_wildcard_subdomains: false) }
+    end,
+    delete_domain: [-> { EP.delete_domain("my-org", 10, 20, 80) }],
+    domain_certificates: [-> { EP.domain_certificates("my-org", 10, 20, 80) }],
+    issue_certificate: EP::CERT_VERIFICATION_METHODS.product(EP::CERT_KEY_TYPES).map do |method, key_type|
+      -> { EP.issue_certificate("my-org", 10, 20, 80, verification_method: method, key_type: key_type) }
+    end,
+    delete_certificate: [-> { EP.delete_certificate("my-org", 10, 20, 80, 90) }]
   }.freeze
 
   # -- schema helpers ---------------------------------------------------------
@@ -255,6 +282,34 @@ describe "Endpoints against docs/forge-openapi.json" do
       assert_equal enum_of("#{SERVER_TEMPLATE}/firewall-rules", "post", "type").sort, EP::FIREWALL_TYPES.sort
       assert_equal enum_of("#{SERVER_TEMPLATE}/background-processes", "post", "user").sort, EP::DAEMON_USERS.sort
       assert_equal enum_of("#{SERVER_TEMPLATE}/scheduled-jobs", "post", "frequency").sort, EP::JOB_FREQUENCIES.sort
+    end
+
+    SITE_TEMPLATE = "#{SERVER_TEMPLATE}/sites/{site}"
+
+    it "site, domain, and certificate tables match their enums" do
+      assert_equal enum_of("#{SERVER_TEMPLATE}/sites", "post", "type").sort, EP::SITE_TYPES.sort
+      assert_equal enum_of("#{SERVER_TEMPLATE}/sites", "post", "php_version").sort, EP::PHP_VERSIONS.sort
+      assert_equal enum_of("#{SITE_TEMPLATE}/domains", "post", "www_redirect_type").sort, EP::WWW_REDIRECT_TYPES.sort
+      letsencrypt = resolve(SNAPSHOT.dig("paths", "#{SITE_TEMPLATE}/domains/{domainRecord}/certificates", "post",
+                                         "requestBody", "content", "application/json", "schema"))
+                    .dig("properties", "letsencrypt", "properties")
+      assert_equal resolve(letsencrypt["verification_method"])["enum"].sort, EP::CERT_VERIFICATION_METHODS.sort
+      assert_equal resolve(letsencrypt["key_type"])["enum"].sort, EP::CERT_KEY_TYPES.sort
+    end
+
+    # The CLI offers a subset of providers; each must still be one the API knows.
+    it "SOURCE_CONTROL_PROVIDERS is a subset of the provider enum" do
+      known = SNAPSHOT.dig("components", "schemas", "SourceControlProvider", "enum")
+      assert_empty EP::SOURCE_CONTROL_PROVIDERS - known
+    end
+
+    # Open question 7: domain_mode is anyOf string | CreateSiteDomainMode, so the
+    # generic checker accepts any string. Pin it to the named enum, and name
+    # (anyOf string | string) to the domain itself.
+    it "settles site-create domain_mode as the custom member of its enum" do
+      assert_includes SNAPSHOT.dig("components", "schemas", "CreateSiteDomainMode", "enum"), "custom"
+      body = EP.create_site("my-org", 10, type: "laravel", name: "example.com").body
+      assert_equal({ type: "laravel", name: "example.com", domain_mode: "custom" }, body)
     end
 
     # Open question 7: the request schema is an allOf whose first part types

@@ -53,6 +53,25 @@ module ForgeCli
       args.first
     end
 
+    # Exactly the named positional arguments, in order, or a usage error.
+    def self.args!(parser, argv, *names)
+      args = parse!(parser, argv, max_args: names.size)
+      raise Error, "missing #{names.drop(args.size).join(' and ')}\n#{parser.banner}" if args.size < names.size
+
+      args
+    end
+
+    HOSTNAME = /\A([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\z/i
+
+    # A domain name such as example.com, lowercased. Wildcards are a flag,
+    # not part of the name. what names the argument in the error.
+    def self.hostname!(value, what)
+      name = value.to_s.strip.downcase
+      return name if name.length <= 253 && name.match?(HOSTNAME)
+
+      raise Error, "#{what} must be a domain name such as example.com, got '#{value}'"
+    end
+
     # A comma-separated flag value as a list of names: blanks dropped, order
     # kept, duplicates removed.
     def self.name_list(value) = value.to_s.split(",").map(&:strip).reject(&:empty?).uniq

@@ -35,9 +35,13 @@ describe "write commands" do
                    "#{SITE}/scheduled-jobs" => [{ id: "50", type: "scheduledJobs", attributes: { name: "site-job", command: "php artisan inspire" } }],
                    "#{SERVER}/database/schemas" => [{ id: "60", type: "databases", attributes: { name: "app" } },
                                                     { id: "61", type: "databases", attributes: { name: "reports" } }],
-                   "#{SERVER}/database/users" => [{ id: "70", type: "databaseUsers", attributes: { name: "app_user" } }] },
+                   "#{SERVER}/database/users" => [{ id: "70", type: "databaseUsers", attributes: { name: "app_user" } }],
+                   "#{SITE}/domains" => [{ id: "80", type: "domainRecords", attributes: { name: "example.com" } },
+                                         { id: "81", type: "domainRecords", attributes: { name: "www.example.com" } }] },
       fetch: { "#{SITE}/environment" => { data: { attributes: { content: SECRET_ENV } } },
                "#{SITE}/deployments/script" => { data: { attributes: { content: SCRIPT, auto_source: false } } },
+               "#{SITE}/domains/80/certificates" => { data: [{ id: "90", type: "certificates",
+                                                                attributes: { type: "letsencrypt", active: true } }] },
                "#{SITE}/deployments/99" => lambda { |_|
                  status = statuses.size > 1 ? statuses.shift : statuses.first
                  { data: { id: "99", type: "deployments", attributes: { status: status } } }
@@ -87,7 +91,14 @@ describe "write commands" do
     "db-delete" => [%w[app -d], "DELETE", "#{SERVER}/database/schemas/60"],
     "db-user-create" => [%w[probe_user --password-stdin -d], "POST", "#{SERVER}/database/users"],
     "db-user-update" => [%w[app_user --databases app -d], "PUT", "#{SERVER}/database/users/70"],
-    "db-user-delete" => [%w[app_user -d], "DELETE", "#{SERVER}/database/users/70"]
+    "db-user-delete" => [%w[app_user -d], "DELETE", "#{SERVER}/database/users/70"],
+    "site-create" => [%w[probe.example.com --php php84 -d], "POST", "#{SERVER}/sites"],
+    "site-update" => [%w[example.com --php php84 -d], "PUT", SITE],
+    "site-delete" => [%w[example.com -d], "DELETE", SITE],
+    "domain-create" => [%w[example.com www.probe.example.com -d], "POST", "#{SITE}/domains"],
+    "domain-delete" => [%w[example.com www.example.com -d], "DELETE", "#{SITE}/domains/81"],
+    "cert-issue" => [%w[example.com example.com -d], "POST", "#{SITE}/domains/80/certificates"],
+    "cert-delete" => [%w[example.com example.com 90 -d], "DELETE", "#{SITE}/domains/80/certificates/90"]
   }.freeze
 
   describe "-d/--dry-run" do
@@ -133,7 +144,12 @@ describe "write commands" do
       "daemon-delete" => [["30"], "DELETE", "#{SERVER}/background-processes/30", "30", SERVER_AFFECTED],
       "job-delete" => [["scheduler"], "DELETE", "#{SERVER}/scheduled-jobs/40", "scheduler", SERVER_AFFECTED],
       "db-delete" => [["app"], "DELETE", "#{SERVER}/database/schemas/60", "app", SERVER_AFFECTED],
-      "db-user-delete" => [["app_user"], "DELETE", "#{SERVER}/database/users/70", "app_user", SERVER_AFFECTED]
+      "db-user-delete" => [["app_user"], "DELETE", "#{SERVER}/database/users/70", "app_user", SERVER_AFFECTED],
+      "site-delete" => [["example.com"], "DELETE", SITE, "example.com", SERVER_AFFECTED],
+      "domain-delete" => [%w[example.com www.example.com], "DELETE", "#{SITE}/domains/81", "www.example.com",
+                          SITE_AFFECTED],
+      "cert-delete" => [%w[example.com example.com 90], "DELETE", "#{SITE}/domains/80/certificates/90", "example.com",
+                        SITE_AFFECTED]
     }.freeze
 
     GUARDED.each do |name, (argv, method, path, token, affected)|
@@ -724,6 +740,180 @@ describe "write commands" do
       run = run_write("db-user-delete", ["70"], stdin: TtyInput.new("app_user\n"))
       assert_includes run[:err], "delete database user 70 (app_user) on server web-1"
       assert_equal [["DELETE", "#{SERVER}/database/users/70", nil]], sent(run)
+    end
+  end
+
+  # -- site, domain, and certificate writes -------------------------------------
+
+  describe "site-create" do
+    it "creates a laravel site on a custom domain with /public, unguarded" do
+      run = run_write("site-create", %w[probe.example.com --php php84])
+      assert_equal [["POST", "#{SERVER}/sites",
+                     { type: "laravel", name: "probe.example.com", domain_mode: "custom", php_version: "php84",
+                       web_directory: "/public" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "sends every optional key, defaulting the provider to github" do
+      run = run_write("site-create", %w[App.Example.com --type statamic --web-dir /web --repo acme/app --branch main
+                                         --isolated --isolated-user app --zero-downtime --wildcard --www to-www])
+      assert_equal({ type: "statamic", name: "app.example.com", domain_mode: "custom", web_directory: "/web",
+                     source_control_provider: "github", repository: "acme/app", branch: "main", is_isolated: true,
+                     isolated_user: "app", zero_downtime_deployments: true, allow_wildcard_subdomains: true,
+                     www_redirect_type: "to-www" }, run[:client].performed.first.body)
+    end
+
+    it "leaves the web directory to Forge for types without a public/ root" do
+      run = run_write("site-create", %w[probe.example.com --type static-html --provider gitlab --repo a/b], fake: client)
+      body = run[:client].performed.first.body
+      refute body.key?(:web_directory)
+      assert_equal "gitlab", body[:source_control_provider]
+    end
+
+    it "shows the request in the dry run" do
+      run = run_write("site-create", %w[probe.example.com --php php84 -d])
+      assert_includes run[:out], "\"domain_mode\": \"custom\""
+      assert_includes run[:out], "\"name\": \"probe.example.com\""
+    end
+
+    it "validates every flag before any request" do
+      assert_rejected("site-create", [], "missing DOMAIN")
+      assert_rejected("site-create", ["not a domain"], "DOMAIN must be a domain name")
+      assert_rejected("site-create", ["localhost"], "DOMAIN must be a domain name")
+      assert_rejected("site-create", %w[probe.example.com --type rails], "--type must be one of")
+      assert_rejected("site-create", %w[probe.example.com --php 8.4], "--php must be one of")
+      assert_rejected("site-create", %w[probe.example.com --www both], "--www must be one of")
+      assert_rejected("site-create", %w[probe.example.com --branch main], "--branch needs --repo")
+      assert_rejected("site-create", %w[probe.example.com --provider gitlab], "--provider needs --repo")
+      assert_rejected("site-create", %w[probe.example.com --repo app], "--repo must look like OWNER/NAME")
+      assert_rejected("site-create", %w[probe.example.com --repo a/b --provider svn], "--provider must be one of")
+      assert_rejected("site-create", %w[probe.example.com --isolated], "--isolated needs --isolated-user")
+      assert_rejected("site-create", %w[probe.example.com --isolated-user app], "--isolated-user needs --isolated")
+      assert_rejected("site-create", %w[probe.example.com --isolated --isolated-user App], "--isolated-user must be")
+      assert_rejected("site-create", ["probe.example.com", "--web-dir", "/a b"], "--web-dir must not contain whitespace")
+    end
+  end
+
+  describe "site-update" do
+    it "sends only the given settings, unguarded" do
+      run = run_write("site-update", %w[example.com --php php83 --no-push-to-deploy --deployment-retention 5])
+      assert_equal [["PUT", SITE, { php_version: "php83", push_to_deploy: false, deployment_retention: 5 }]], sent(run)
+      assert_equal "Updated site 20 (example.com): php_version, push_to_deploy, deployment_retention\n", run[:out]
+      assert_equal SITE_AFFECTED, run[:result]
+    end
+
+    it "maps --branch, --directory, --root-path, and --type to the API keys" do
+      run = run_write("site-update", %w[20 --branch main --directory /public --root-path /home/forge/x --type php
+                                        --push-to-deploy])
+      assert_equal({ repository_branch: "main", directory: "/public", root_path: "/home/forge/x", type: "php",
+                     push_to_deploy: true }, run[:client].performed.first.body)
+    end
+
+    it "needs a setting, and checks values, before any request" do
+      assert_rejected("site-update", ["example.com"], "give at least one setting")
+      assert_rejected("site-update", %w[example.com --php php9], "--php must be one of")
+      assert_rejected("site-update", %w[example.com --type rails], "--type must be one of")
+      assert_rejected("site-update", %w[example.com --deployment-retention 101], "--deployment-retention")
+      assert_rejected("site-update", %w[example.com --deployment-retention 0], "--deployment-retention")
+    end
+  end
+
+  describe "site-delete" do
+    it "names the site and server in the prompt and opens the server" do
+      run = run_write("site-delete", ["20"], stdin: TtyInput.new("example.com\n"))
+      assert_includes run[:err], "delete site 20 (example.com) and its files on server web-1 (id 10)"
+      assert_equal [["DELETE", SITE, nil]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "fails with NotFoundError for an unknown site and sends nothing" do
+      fake = client
+      assert_raises(ForgeCli::NotFoundError) { run_write("site-delete", ["nope.example.com", "--yes"], fake: fake) }
+      assert_empty fake.performed
+    end
+  end
+
+  describe "domain-create" do
+    it "always sends all three keys, defaulting to no redirect and no wildcard" do
+      run = run_write("domain-create", %w[example.com WWW.probe.example.com])
+      assert_equal [["POST", "#{SITE}/domains",
+                     { name: "www.probe.example.com", www_redirect_type: "none", allow_wildcard_subdomains: false }]],
+                   sent(run)
+      assert_equal SITE_AFFECTED, run[:result]
+    end
+
+    it "takes --www and --wildcard" do
+      run = run_write("domain-create", %w[example.com probe.example.com --www from-www --wildcard])
+      assert_equal({ name: "probe.example.com", www_redirect_type: "from-www", allow_wildcard_subdomains: true },
+                   run[:client].performed.first.body)
+    end
+
+    it "validates arguments before any request" do
+      assert_rejected("domain-create", ["example.com"], "missing DOMAIN")
+      assert_rejected("domain-create", [], "missing SITE and DOMAIN")
+      assert_rejected("domain-create", %w[example.com bad_domain], "DOMAIN must be a domain name")
+      assert_rejected("domain-create", %w[example.com probe.example.com --www sometimes], "--www must be one of")
+      assert_rejected("domain-create", %w[example.com a.example.com b.example.com], "unexpected argument")
+    end
+  end
+
+  describe "domain-delete" do
+    it "resolves the domain by id and names it in the prompt" do
+      run = run_write("domain-delete", %w[example.com 81], stdin: TtyInput.new("www.example.com\n"))
+      assert_includes run[:err], "remove domain 81 (www.example.com) from site example.com (id 20)"
+      assert_equal [["DELETE", "#{SITE}/domains/81", nil]], sent(run)
+    end
+
+    it "fails with NotFoundError for an unknown domain and sends nothing" do
+      fake = client
+      assert_raises(ForgeCli::NotFoundError) { run_write("domain-delete", %w[example.com nope.example.com --yes], fake: fake) }
+      assert_empty fake.performed
+    end
+  end
+
+  describe "cert-issue" do
+    it "requests a Let's Encrypt certificate with http-01 and ecdsa by default, unguarded" do
+      run = run_write("cert-issue", %w[example.com example.com])
+      assert_equal [["POST", "#{SITE}/domains/80/certificates",
+                     { type: "letsencrypt", letsencrypt: { verification_method: "http-01", key_type: "ecdsa" } }]],
+                   sent(run)
+      assert_equal SITE_AFFECTED, run[:result]
+    end
+
+    it "takes --verification and --key-type, and a domain id" do
+      run = run_write("cert-issue", %w[example.com 81 --verification dns-01 --key-type rsa])
+      assert_equal [["POST", "#{SITE}/domains/81/certificates",
+                     { type: "letsencrypt", letsencrypt: { verification_method: "dns-01", key_type: "rsa" } }]],
+                   sent(run)
+    end
+
+    it "validates flags before any request, and offers no other certificate types" do
+      assert_rejected("cert-issue", %w[example.com example.com --verification tls-alpn-01], "--verification must be one of")
+      assert_rejected("cert-issue", %w[example.com example.com --key-type dsa], "--key-type must be one of")
+      assert_rejected("cert-issue", %w[example.com example.com --type existing], "invalid option: --type")
+      assert_rejected("cert-issue", %w[example.com], "missing DOMAIN")
+    end
+  end
+
+  describe "cert-delete" do
+    it "checks the certificate exists on the domain and takes the domain name as the token" do
+      run = run_write("cert-delete", %w[example.com example.com 90], stdin: TtyInput.new("example.com\n"))
+      assert_includes run[:err], "delete certificate 90 (letsencrypt) for domain example.com on site example.com"
+      assert_includes run[:err], "Type example.com to confirm"
+      assert_equal [["DELETE", "#{SITE}/domains/80/certificates/90", nil]], sent(run)
+    end
+
+    it "fails with NotFoundError for an unknown certificate and sends nothing" do
+      fake = client
+      assert_raises(ForgeCli::NotFoundError) { run_write("cert-delete", %w[example.com example.com 91 --yes], fake: fake) }
+      assert_empty fake.performed
+    end
+
+    it "rejects a non-numeric certificate id and missing arguments without sending" do
+      fake = client
+      assert_raises(ForgeCli::Error) { run_write("cert-delete", %w[example.com example.com letsencrypt --yes], fake: fake) }
+      assert_empty fake.performed
+      assert_rejected("cert-delete", %w[example.com example.com], "missing CERT_ID")
     end
   end
 end

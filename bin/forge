@@ -35,6 +35,7 @@ COMMANDS = %w[
   firewall-create firewall-delete service reboot
   daemon-create daemon-delete daemon-restart job-create job-delete
   db-create db-delete db-user-create db-user-update db-user-delete
+  site-create site-update site-delete domain-create domain-delete cert-issue cert-delete
 ].freeze
 
 # Commands that change Forge. Each returns an Affected (nil on a dry run or
@@ -45,6 +46,7 @@ WRITE_COMMANDS = %w[
   firewall-create firewall-delete service reboot
   daemon-create daemon-delete daemon-restart job-create job-delete
   db-create db-delete db-user-create db-user-update db-user-delete
+  site-create site-update site-delete domain-create domain-delete cert-issue cert-delete
 ].freeze
 
 def usage(status = 1)
@@ -141,10 +143,31 @@ def usage(status = 1)
       Passwords are never arguments: pipe one line to --password-stdin, or run on
       a terminal to be prompted without echo. Dry runs print the password masked.
 
+    Site writes:
+      site-create DOMAIN [-S SERVER] [--type T] [--php phpNN] [--web-dir DIR]
+                  [--repo OWNER/NAME [--branch B] [--provider github|gitlab|bitbucket]]
+                  [--isolated --isolated-user U] [--zero-downtime] [--wildcard]
+                  [--www from-www|to-www|none]
+                                      Create a site on DOMAIN (type default laravel; web dir
+                                      default /public for laravel, symfony, statamic)
+      site-update SITE [--php phpNN] [--type T] [--directory DIR] [--root-path P]
+                  [--branch B] [--[no-]push-to-deploy] [--deployment-retention N]
+                                      Change a site's settings (give at least one)
+      site-delete SITE [-y]           Delete a site and its files (guarded)
+      domain-create SITE DOMAIN [--www from-www|to-www|none] [--wildcard]
+                                      Add a domain to a site (www default none)
+      domain-delete SITE DOMAIN [-y]  Remove a domain by name or id (guarded)
+      cert-issue SITE DOMAIN [--verification http-01|dns-01] [--key-type ecdsa|rsa]
+                                      Request a Let's Encrypt certificate for a domain
+                                      (defaults http-01, ecdsa)
+      cert-delete SITE DOMAIN CERT_ID [-y]
+                                      Remove a certificate from a domain (guarded; type
+                                      the domain name)
+
     Guarded writes ask you to type the resource's name (the site, server, rule,
-    job, database, or database user name; a daemon's id) on a TTY; pass -y/--yes
-    to confirm non-interactively (required with --stdin). A write that changes nothing
-    prints "no change" and sends nothing.
+    job, database, database user, or domain name; a daemon's id) on a TTY;
+    pass -y/--yes to confirm non-interactively (required with --stdin). A write
+    that changes nothing prints "no change" and sends nothing.
 
     SERVER defaults to FORGE_SERVER, else the org's only server.
     SITE is a site name (its domain) or id; site commands find its server

@@ -196,10 +196,75 @@ module ForgeCli
 
     def delete_db_user(org, server, id) = write("DELETE", "#{server_path(org, server)}/database/users/#{segment(id)}")
 
+    # -- writes: sites --------------------------------------------------------
+
+    SITE_TYPES = %w[laravel symfony statamic wordpress phpmyadmin php nextjs nuxtjs static-html other custom].freeze
+    PHP_VERSIONS = %w[php5 php56-old php56 php70 php71 php72 php73 php74 php80 php81 php82 php83 php84 php85].freeze
+    WWW_REDIRECT_TYPES = %w[from-www to-www none].freeze
+    # The snapshot also lists gitlab-custom and custom, which need a
+    # source_control_provider_id the CLI does not take.
+    SOURCE_CONTROL_PROVIDERS = %w[github gitlab bitbucket].freeze
+
+    # Open question 7: domain_mode is "custom" (the site answers on name, a
+    # domain you own) or "on-forge" (a Forge-provided subdomain). The CLI
+    # creates custom-domain sites only, so name is always the domain.
+    CREATE_SITE_KEYS = %i[php_version web_directory source_control_provider repository branch is_isolated isolated_user
+                          zero_downtime_deployments allow_wildcard_subdomains www_redirect_type].freeze
+
+    def create_site(org, server, type:, name:, **attrs)
+      check_site_keys!(attrs, CREATE_SITE_KEYS)
+
+      write("POST", "#{server_path(org, server)}/sites", { type: type, name: name, domain_mode: "custom", **attrs })
+    end
+
+    UPDATE_SITE_KEYS = %i[php_version type directory root_path repository_branch push_to_deploy
+                          deployment_retention].freeze
+
+    def update_site(org, server, site, **attrs)
+      check_site_keys!(attrs, UPDATE_SITE_KEYS)
+
+      write("PUT", site_path(org, server, site), attrs)
+    end
+
+    def delete_site(org, server, site) = write("DELETE", site_path(org, server, site))
+
+    # -- writes: domains and certificates -------------------------------------
+
+    # The API requires all three keys.
+    def create_domain(org, server, site, name:, www_redirect_type:, allow_wildcard_subdomains:)
+      write("POST", "#{site_path(org, server, site)}/domains",
+            { name: name, www_redirect_type: www_redirect_type, allow_wildcard_subdomains: allow_wildcard_subdomains })
+    end
+
+    def delete_domain(org, server, site, id) = write("DELETE", "#{site_path(org, server, site)}/domains/#{segment(id)}")
+
+    def domain_certificates(org, server, site, domain_id)
+      get("#{site_path(org, server, site)}/domains/#{segment(domain_id)}/certificates")
+    end
+
+    CERT_VERIFICATION_METHODS = %w[http-01 dns-01].freeze
+    CERT_KEY_TYPES = %w[ecdsa rsa].freeze
+
+    # Let's Encrypt only. The request's `enable` is not sent: the snapshot says
+    # it is ignored for Let's Encrypt certificates.
+    def issue_certificate(org, server, site, domain_id, verification_method:, key_type:)
+      write("POST", "#{site_path(org, server, site)}/domains/#{segment(domain_id)}/certificates",
+            { type: "letsencrypt", letsencrypt: { verification_method: verification_method, key_type: key_type } })
+    end
+
+    def delete_certificate(org, server, site, domain_id, id)
+      write("DELETE", "#{site_path(org, server, site)}/domains/#{segment(domain_id)}/certificates/#{segment(id)}")
+    end
+
     # -- helpers ------------------------------------------------------------
 
     def job_body(command:, user:, frequency:, name:, cron:, heartbeat:)
       { command: command, user: user, frequency: frequency, name: name, cron: cron, heartbeat: heartbeat }
+    end
+
+    def check_site_keys!(attrs, allowed)
+      unknown = attrs.keys - allowed
+      raise ArgumentError, "unknown site attribute: #{unknown.join(', ')}" unless unknown.empty?
     end
 
     def get(path, query = {}) = Request.new(method: "GET", path: path, query: query)

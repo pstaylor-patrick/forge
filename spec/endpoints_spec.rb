@@ -155,5 +155,31 @@ describe ForgeCli::Endpoints do
       assert_equal ["DELETE", "/orgs/o/servers/1/database/users/70", nil],
                    E.delete_db_user("o", 1, 70).then { |r| [r.method, r.path, r.body] }
     end
+
+    it "builds site writes with domain_mode custom and rejects unknown attributes" do
+      request = E.create_site("o", 1, type: "laravel", name: "example.com", php_version: "php84", branch: nil)
+      assert_equal ["POST", "/orgs/o/servers/1/sites",
+                    { type: "laravel", name: "example.com", domain_mode: "custom", php_version: "php84" }],
+                   [request.method, request.path, request.body]
+      assert_raises(ArgumentError) { E.create_site("o", 1, type: "laravel", name: "example.com", tags: []) }
+      assert_equal ["PUT", "/orgs/o/servers/1/sites/2", { push_to_deploy: false }],
+                   E.update_site("o", 1, 2, push_to_deploy: false).then { |r| [r.method, r.path, r.body] }
+      assert_raises(ArgumentError) { E.update_site("o", 1, 2, name: "x") }
+      assert_equal ["DELETE", "/orgs/o/servers/1/sites/2", nil],
+                   E.delete_site("o", 1, 2).then { |r| [r.method, r.path, r.body] }
+    end
+
+    it "builds domain and Let's Encrypt certificate writes" do
+      assert_equal({ name: "www.example.com", www_redirect_type: "none", allow_wildcard_subdomains: false },
+                   E.create_domain("o", 1, 2, name: "www.example.com", www_redirect_type: "none",
+                                              allow_wildcard_subdomains: false).body)
+      assert_equal "/orgs/o/servers/1/sites/2/domains/80", E.delete_domain("o", 1, 2, 80).path
+      request = E.issue_certificate("o", 1, 2, 80, verification_method: "http-01", key_type: "ecdsa")
+      assert_equal ["POST", "/orgs/o/servers/1/sites/2/domains/80/certificates",
+                    { type: "letsencrypt", letsencrypt: { verification_method: "http-01", key_type: "ecdsa" } }],
+                   [request.method, request.path, request.body]
+      assert_equal ["DELETE", "/orgs/o/servers/1/sites/2/domains/80/certificates/90"],
+                   E.delete_certificate("o", 1, 2, 80, 90).then { |r| [r.method, r.path] }
+    end
   end
 end
