@@ -19,6 +19,7 @@ if File.file?(env_file)
   end
 end
 
+require "forge_cli/browser"
 require "forge_cli/client"
 require "forge_cli/context"
 require "forge_cli/error"
@@ -30,10 +31,13 @@ COMMANDS = %w[
   servers server
   sites site deploys deploy-log deploy-status deploy-script env domains certs logs
   dbs db-users daemons daemon-log jobs job-output firewall events event-output server-log
+  deploy env-set deploy-script-set
 ].freeze
 
-# Commands that change Forge. Empty until the write path lands.
-WRITE_COMMANDS = %w[].freeze
+# Commands that change Forge. Each returns an Affected (nil on a dry run or
+# no-op), and bin/forge opens that page in the browser so no write is silent.
+# See lib/forge_cli/browser.rb.
+WRITE_COMMANDS = %w[deploy env-set deploy-script-set].freeze
 
 def usage(status = 1)
   puts <<~USAGE
@@ -79,16 +83,33 @@ def usage(status = 1)
       server-log KEY [--tail N]       A server log, e.g. nginx-access, nginx-error, php-8.4,
                                       redis-server, database-mysql (default 200 lines, 0 = all)
 
+    Writes (every write takes -d/--dry-run: print the request, send nothing):
+      deploy SITE [-w|--wait] [--timeout SEC]
+                                      Queue a deployment; --wait polls until it finishes
+                                      (exit 1 on failure or after SEC, default 900)
+      env-set SITE MODE [--cache] [--queues] [--reveal] [-y]
+                                      Replace the .env (guarded). MODE is one of --file PATH,
+                                      --stdin, or one or more --set KEY=VALUE / --unset KEY.
+                                      Prints changed key names only; the dry-run body is
+                                      masked unless --reveal
+      deploy-script-set SITE (--file PATH | --stdin) [--[no-]auto-source] [-y]
+                                      Replace the deploy script (guarded)
+
+    Guarded writes ask you to type the site name on a TTY; pass -y/--yes to
+    confirm non-interactively (required with --stdin). A write that changes
+    nothing prints "no change" and sends nothing.
+
     SERVER defaults to FORGE_SERVER, else the org's only server.
     SITE is a site name (its domain) or id; site commands find its server
     themselves, and -S only narrows the lookup.
 
     Environment:
-      FORGE_API_KEY   API token (loaded from the repo .env symlink)
-      FORGE_ORG       Default organization slug
-      FORGE_SERVER    Default server name or id
-      FORGE_DEBUG     Set to 1 for backtraces on errors (never prints the token)
-      NO_COLOR        Disable color in human output
+      FORGE_API_KEY     API token (loaded from the repo .env symlink)
+      FORGE_ORG         Default organization slug
+      FORGE_SERVER      Default server name or id
+      FORGE_DEBUG       Set to 1 for backtraces on errors (never prints the token)
+      FORGE_NO_BROWSER  Set to 1 to stop writes opening the Forge page in a browser
+      NO_COLOR          Disable color in human output
 
     Exit codes: 0 ok, 1 error, 2 auth, 3 not found, 4 API error.
   USAGE
@@ -145,7 +166,13 @@ begin
   klass = ForgeCli::Commands.const_get(cmd.split(/[-_]/).map(&:capitalize).join)
   client = ForgeCli::Client.new
   ctx = ForgeCli::Context.new(client: client, formatter: formatter, org: globals[:org])
-  klass.run(argv, ctx: ctx, formatter: formatter)
+  affected = klass.run(argv, ctx: ctx, formatter: formatter)
+  ForgeCli::Browser.open(affected) if WRITE_COMMANDS.include?(cmd) && affected.is_a?(ForgeCli::Affected)
+rescue ForgeCli::DeployFailed => e
+  # The deployment was queued; open the site so the failure is visible there.
+  ForgeCli::Browser.open(e.affected) if e.affected
+  report("Error: ", e)
+  exit 1
 rescue ForgeCli::AuthError => e
   report("Auth error: ", e)
   exit 2

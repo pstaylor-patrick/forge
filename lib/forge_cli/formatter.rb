@@ -1,10 +1,25 @@
 # frozen_string_literal: true
 
 require "json"
+require "uri"
 require_relative "env_file"
 require_relative "records"
 
 module ForgeCli
+  # The printable form of a request that a dry run did not send.
+  module DryRun
+    def self.describe(request, redact: nil)
+      body = request.body
+      body = redact.call(body) if redact && !body.nil?
+      { method: request.method, path: request.path, query: request.query || {}, body: body }
+    end
+
+    def self.target(described)
+      query = described[:query]
+      query.empty? ? described[:path] : "#{described[:path]}?#{URI.encode_www_form(query)}"
+    end
+  end
+
   # JSON output (-j/--json): every command emits {ok: true, command:, data:}
   # with the raw API data, so output pipes cleanly to jq.
   module JsonFormatter
@@ -15,6 +30,23 @@ module ForgeCli
     def self.list(command, records, columns: nil, derive: nil) = emit(command, records)
     def self.show(command, record, fields: nil, derive: nil) = emit(command, record)
     def self.text(command, content, meta: {}, footer: []) = emit(command, { content: content, **meta })
+
+    # A write that was not sent. redact: optional ->(body) { body } applied
+    # before printing (masked env, hidden passwords).
+    def self.dry_run(command, request, redact: nil)
+      emit(command, { dry_run: true, request: DryRun.describe(request, redact: redact) })
+    end
+
+    # A write that was sent: the API data, or {done: true} for an empty response.
+    def self.written(command, result, summary: nil)
+      data = result.is_a?(Hash) ? result[:data] : nil
+      emit(command, data || { done: true })
+    end
+
+    # A write skipped because it would change nothing.
+    def self.unchanged(command, message = "no change")
+      emit(command, { changed: false, message: message })
+    end
 
     # Masked unless revealed: entries carry key names, and values only when
     # revealed. Raw content is included only when revealed.
@@ -74,6 +106,24 @@ module ForgeCli
     # The .env with values masked, or raw when revealed.
     def self.env(command, site_name, content, revealed:)
       text(command, revealed ? content : EnvFile.mask(content))
+    end
+
+    # DRY RUN header, the method and path (with query), and the body as
+    # pretty JSON after redact.
+    def self.dry_run(command, request, redact: nil)
+      described = DryRun.describe(request, redact: redact)
+      puts style("DRY RUN (nothing sent)", BOLD)
+      puts "#{described[:method]} #{DryRun.target(described)}"
+      puts "body: #{JSON.pretty_generate(described[:body])}" unless described[:body].nil?
+    end
+
+    # One line saying what changed, e.g. "Deployment 123 queued for example.com".
+    def self.written(command, result, summary: nil)
+      puts summary || "#{command}: done"
+    end
+
+    def self.unchanged(command, message = "no change")
+      puts message
     end
 
     def self.row(record, derive)

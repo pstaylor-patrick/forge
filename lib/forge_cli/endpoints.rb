@@ -77,9 +77,30 @@ module ForgeCli
     def server_events(org, server, size:) = get("#{server_path(org, server)}/events", events_query(size))
     def event_output(org, server, id) = get("#{server_path(org, server)}/events/#{segment(id)}/output")
 
+    # -- writes: deploy, env, deploy script ----------------------------------
+
+    # Queues a deployment; the API answers 202 with the DeploymentResource.
+    def deploy(org, server, site) = write("POST", "#{site_path(org, server, site)}/deployments")
+
+    # The request key is `environment`, though the read returns `content`.
+    def put_environment(org, server, site, content:, cache: nil, queues: nil)
+      write("PUT", "#{site_path(org, server, site)}/environment",
+            { environment: content, cache: cache, queues: queues })
+    end
+
+    def put_deploy_script(org, server, site, content:, auto_source: nil)
+      write("PUT", "#{site_path(org, server, site)}/deployments/script",
+            { content: content, auto_source: auto_source })
+    end
+
     # -- helpers ------------------------------------------------------------
 
     def get(path, query = {}) = Request.new(method: "GET", path: path, query: query)
+
+    # A write request; nil body keys are dropped.
+    def write(method, path, body = nil)
+      Request.new(method: method, path: path, body: body && compact_body(body))
+    end
 
     def org_path(org) = "/orgs/#{segment(org)}"
     def server_path(org, server) = "#{org_path(org)}/servers/#{segment(server)}"

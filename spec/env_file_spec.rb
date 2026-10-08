@@ -97,4 +97,84 @@ describe ForgeCli::EnvFile do
       assert_equal 3, item[:raw_lines].size
     end
   end
+
+  describe ".set" do
+    def set(content, key, value) = ForgeCli::EnvFile.set(content, key, value)
+
+    it "replaces the first entry in place" do
+      assert_equal "A=1\nB=new\nC=3\nB=dup\n", set("A=1\nB=2\nC=3\nB=dup\n", "B", "new")
+    end
+
+    it "replaces every line of a multi-line entry" do
+      assert_equal "K=short\nNEXT=1\n", set("K=\"line1\nline2\"\nNEXT=1\n", "K", "short")
+    end
+
+    it "keeps the export prefix" do
+      assert_equal "export A=2\n", set("export A=1\n", "A", "2")
+    end
+
+    it "appends a missing key, adding a newline first when needed" do
+      assert_equal "A=1\nB=2\n", set("A=1\n", "B", "2")
+      assert_equal "A=1\nB=2\n", set("A=1", "B", "2")
+      assert_equal "B=2\n", set("", "B", "2")
+    end
+
+    it "keeps a missing trailing newline when replacing the last line" do
+      assert_equal "A=1\nB=new", set("A=1\nB=old", "B", "new")
+    end
+
+    it "quotes values that need it and leaves plain ones bare" do
+      assert_equal "A=base64:abc/def\n", set("", "A", "base64:abc/def")
+      assert_equal %(A="two words"\n), set("", "A", "two words")
+      assert_equal %(A="x=1"\n), set("", "A", "x=1")
+      assert_equal %(A="$HOME"\n), set("", "A", "$HOME")
+      assert_equal %(A="say \\"hi\\" \\\\ ok"\n), set("", "A", %(say "hi" \\ ok))
+    end
+
+    it "round-trips any value through entries" do
+      ["plain", "two words", %(quote " and \\ slash), "hash # inside", "it's", "multi\nline", ""].each do |value|
+        assert_equal value, entries(set("A=1\n", "A", value)).first[:value]
+      end
+    end
+
+    it "rejects an invalid key" do
+      assert_raises(ArgumentError) { set("", "1BAD", "x") }
+      assert_raises(ArgumentError) { set("", "A B", "x") }
+    end
+  end
+
+  describe ".unset" do
+    def unset(content, key) = ForgeCli::EnvFile.unset(content, key)
+
+    it "removes every entry for the key, including multi-line ones" do
+      assert_equal "A=1\nC=3\n", unset("A=1\nB=\"x\ny\"\nC=3\nB=again\n", "B")
+    end
+
+    it "leaves comments and other keys alone, and ignores an unknown key" do
+      content = "# B=commented\nA=1\n"
+      assert_equal content, unset(content, "B")
+    end
+  end
+
+  describe ".key_diff" do
+    def diff(old, new) = ForgeCli::EnvFile.key_diff(old, new)
+
+    it "reports added, removed, and changed key names, sorted" do
+      result = diff("A=1\nB=2\nC=3\n", "C=changed\nA=1\nZ=new\nD=new\n")
+      assert_equal({ added: %w[D Z], removed: %w[B], changed: %w[C] }, result)
+    end
+
+    it "is empty when only comments or quoting change" do
+      assert_equal({ added: [], removed: [], changed: [] }, diff("A=1\n", "# hi\n\nA=\"1\"\n"))
+    end
+
+    it "counts a changed duplicate as a change" do
+      assert_equal %w[A], diff("A=1\nA=2\n", "A=1\nA=3\n")[:changed]
+    end
+
+    it "never contains a value" do
+      result = diff("SECRET=old-value\n", "SECRET=new-value\n")
+      refute_includes result.inspect, "value"
+    end
+  end
 end

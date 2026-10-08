@@ -2,6 +2,8 @@
 
 require "optparse"
 require_relative "error"
+require_relative "browser"
+require_relative "guard"
 
 module ForgeCli
   # Shared option parsing for commands. The reserved short flags (-S, -d, -y,
@@ -50,6 +52,59 @@ module ForgeCli
         raise Error, "#{flag} must be an integer in #{range}, got '#{value}'"
       end
       number
+    end
+
+    # The one write path. Every write command calls this after resolving names
+    # and building its request, so the order is fixed:
+    #   dry-run exit -> guard -> perform -> print -> return Affected.
+    # A dry run never prompts and never sends; it returns nil (no browser).
+    #
+    # confirm: nil for non-destructive writes, else {action:, token:} for Guard.
+    # redact:  optional ->(body) { body } for dry-run output (env, passwords).
+    # summary: optional ->(result) { "one line" } for human output.
+    # A block, when given, receives the API result and returns the result to
+    # print (deploy --wait polls there; env-set drops the response body).
+    def self.write!(ctx, command:, request:, opts:, affected:, confirm: nil, redact: nil, summary: nil)
+      if opts[:dry_run]
+        ctx.formatter.dry_run(command, request, redact: redact)
+        return nil
+      end
+
+      Guard.confirm!(confirm, yes: opts[:yes], stdin: ctx.stdin, command: command) if confirm
+      result = ctx.client.perform(request)
+      result = yield(result) if block_given?
+      ctx.formatter.written(command, result, summary: summary&.call(result))
+      affected
+    end
+
+    # The page a site-scoped write opens afterwards.
+    def self.site_affected(org, ref) = Affected.new(org: org, server_id: ref[:server_id], site_id: ref[:site_id])
+
+    # Guard prompt for a write that overwrites something on a site; the user
+    # types the site name.
+    def self.site_confirm(action, ref)
+      { action: "#{action} of #{ref[:name]} (site #{ref[:site_id]} on server #{ref[:server_id]})", token: ref[:name] }
+    end
+
+    # Reads replacement content for --file PATH or --stdin.
+    def self.read_source(opts, stdin, flag_help:)
+      sources = %i[file stdin].select { |key| opts[key] }
+      raise Error, "give exactly one of #{flag_help}" unless sources.size == 1
+
+      if opts[:file]
+        path = File.expand_path(opts[:file])
+        raise Error, "no such file: #{opts[:file]}" unless File.file?(path)
+
+        File.read(path)
+      else
+        stdin.read.to_s
+      end
+    end
+
+    # Same text, ignoring trailing newlines (a file saved from the read
+    # command gains one when the stored text lacks it).
+    def self.same_text?(left, right)
+      left.to_s.sub(/\n+\z/, "") == right.to_s.sub(/\n+\z/, "")
     end
 
     # The last n lines of content; n = 0 keeps everything.

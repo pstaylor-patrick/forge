@@ -49,7 +49,65 @@ module ForgeCli
       out.empty? ? "" : "#{out.join("\n")}\n"
     end
 
+    KEY = /\A[A-Za-z_][A-Za-z0-9_.]*\z/
+    NEEDS_QUOTES = /[\s#"'=$\\]/
+
+    def self.valid_key?(key) = KEY.match?(key.to_s)
+
+    # Replaces the first entry for key in place (all of its lines, keeping an
+    # export prefix), else appends KEY=value. The value is double-quoted when it
+    # contains whitespace, #, quotes, =, $, or a backslash.
+    def self.set(content, key, value)
+      raise ArgumentError, "invalid env key: #{key.inspect}" unless valid_key?(key)
+
+      items = entries(content)
+      index = items.index { |item| item[:type] == :entry && item[:key] == key }
+      if index
+        item = items[index]
+        newline = item[:raw_lines].last.end_with?("\n") ? "\n" : ""
+        line = "#{item[:export] ? 'export ' : ''}#{key}=#{format_value(value)}#{newline}"
+        items[index] = { type: :entry, key: key, value: value.to_s, export: item[:export], raw_lines: [line] }
+        return join(items)
+      end
+
+      text = content.to_s
+      text += "\n" unless text.empty? || text.end_with?("\n")
+      "#{text}#{key}=#{format_value(value)}\n"
+    end
+
+    # Removes every entry for key (all of its lines). Unknown key: unchanged.
+    def self.unset(content, key)
+      join(entries(content).reject { |item| item[:type] == :entry && item[:key] == key })
+    end
+
+    # Key names only, never values: {added:, removed:, changed:}, each sorted.
+    def self.key_diff(old_content, new_content)
+      before = values_by_key(old_content)
+      after = values_by_key(new_content)
+      {
+        added: (after.keys - before.keys).sort,
+        removed: (before.keys - after.keys).sort,
+        changed: (before.keys & after.keys).reject { |key| before[key] == after[key] }.sort
+      }
+    end
+
+    def self.format_value(value)
+      text = value.to_s
+      return text unless NEEDS_QUOTES.match?(text)
+
+      %("#{text.gsub(/["\\]/) { |char| "\\#{char}" }}")
+    end
+
     # -- parsing helpers --------------------------------------------------------
+
+    def self.join(items) = items.flat_map { |item| item[:raw_lines] }.join
+
+    # Every value a key is assigned, in order, so duplicates count too.
+    def self.values_by_key(content)
+      entries(content).select { |item| item[:type] == :entry }
+                      .group_by { |item| item[:key] }
+                      .transform_values { |items| items.map { |item| item[:value] } }
+    end
 
     # One assignment, consuming continuation lines from `lines` while a quote
     # opened on the first line is still open.
@@ -107,6 +165,6 @@ module ForgeCli
       parse_value(match[:rest]).empty? ? line.strip : "# #{match[:key]}=#{MASK}"
     end
 
-    private_class_method :entry, :scan_quoted, :unclosed_quote?, :parse_value, :mask_comment
+    private_class_method :join, :values_by_key, :entry, :scan_quoted, :unclosed_quote?, :parse_value, :mask_comment
   end
 end

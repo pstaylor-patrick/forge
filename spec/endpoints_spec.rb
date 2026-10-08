@@ -121,4 +121,26 @@ describe ForgeCli::Endpoints do
       end
     end
   end
+
+  describe "write builders" do
+    it "queues a deployment with a bodyless POST" do
+      request = E.deploy("my-org", 10, 20)
+      assert_equal ["POST", "/orgs/my-org/servers/10/sites/20/deployments", nil], [request.method, request.path, request.body]
+    end
+
+    it "sends the env file under environment, not content, and drops unset flags" do
+      request = E.put_environment("my-org", 10, 20, content: "A=1\n")
+      assert_equal "PUT", request.method
+      assert_equal "/orgs/my-org/servers/10/sites/20/environment", request.path
+      assert_equal({ environment: "A=1\n" }, request.body)
+      assert_equal({ environment: "", cache: true, queues: false },
+                   E.put_environment("o", 1, 2, content: "", cache: true, queues: false).body)
+    end
+
+    it "keeps auto_source false but drops it when nil" do
+      assert_equal({ content: "x" }, E.put_deploy_script("o", 1, 2, content: "x").body)
+      assert_equal({ content: "x", auto_source: false }, E.put_deploy_script("o", 1, 2, content: "x", auto_source: false).body)
+      assert_equal "/orgs/o/servers/1/sites/2/deployments/script", E.put_deploy_script("o", 1, 2, content: "x").path
+    end
+  end
 end

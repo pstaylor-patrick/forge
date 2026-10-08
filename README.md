@@ -2,7 +2,7 @@
 
 A small command-line client for the [Laravel Forge](https://forge.laravel.com) organization-scoped API. Ruby standard library only: no Gemfile, no gems at runtime.
 
-Current commands are read-only: the account, orgs, servers, sites, deployments, env, logs, and server resources.
+Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and the first writes: deploying, editing a site's `.env`, and replacing its deploy script. Every write can be previewed with `-d`.
 
 ## Setup
 
@@ -79,6 +79,22 @@ All take `-S SERVER`.
 | `event-output EVENT_ID` | An event's output |
 | `server-log KEY [--tail N]` | The last N lines of a server log (default 200, `0` = all). See the keys below |
 
+#### Writes
+
+Every write takes `-d/--dry-run`, which prints the method, path, and body and sends nothing (exit 0). Run a write with `-d` first.
+
+| Command | What it does | Guarded |
+|---------|--------------|---------|
+| `deploy SITE [-w\|--wait] [--timeout SEC]` | Queues a deployment. `--wait` polls every 5 seconds, printing each status change to stderr, until it finishes; a `failed`, `failed-build`, or `cancelled` deployment, or the timeout (default 900 seconds), exits 1 with the `forge deploy-log SITE ID` command to run | no |
+| `env-set SITE MODE [--cache] [--queues] [--reveal]` | Replaces the site's `.env`. `MODE` is exactly one of `--file PATH`, `--stdin`, or one or more `--set KEY=VALUE` / `--unset KEY` (applied in order to the current file). Prints the added, removed, and changed key names to stderr, never values. The dry-run body shows the file masked unless `--reveal` | yes |
+| `deploy-script-set SITE (--file PATH \| --stdin) [--[no-]auto-source]` | Replaces the deploy script. Prints `N lines -> M lines` to stderr | yes |
+
+A write that would change nothing (same content, ignoring trailing newlines) prints `no change`, sends nothing, and exits 0. So `forge deploy-script SITE > script.sh`, an edit, then `forge deploy-script-set SITE --file script.sh -d` previews exactly that edit.
+
+Guarded writes overwrite content Forge cannot give back. On a terminal they say what will happen and ask you to type the site name; anything else aborts (exit 1) with nothing sent. Without a terminal (scripts, agents) they refuse (exit 1) unless you pass `-y/--yes`. `--stdin` consumes stdin, so it always needs `--yes` (or `-d`). No environment variable skips the guard.
+
+After a successful write, the CLI opens the affected site's Forge page in your browser, so no change is silent. Set `FORGE_NO_BROWSER=1` to turn that off. Dry runs and no-ops never open anything.
+
 `SERVER` defaults to `FORGE_SERVER`, else the org's only server. If the org has several servers and none is selected, the command fails and lists their names.
 
 Names resolve exactly (then case-insensitively); there is no partial matching. A name that matches nothing exits 3 and lists what exists; a name that matches several things exits 1 and lists their ids.
@@ -123,6 +139,11 @@ bin/forge logs example.com --type nginx-error --tail 50
 bin/forge jobs --site example.com
 bin/forge server-log nginx-access -S web-1 --tail 100
 bin/forge -j events -n 5 | jq '.data[].attributes.description'
+bin/forge deploy example.com -d
+bin/forge deploy example.com --wait
+bin/forge env-set example.com --set APP_DEBUG=false --unset OLD_FLAG -d
+bin/forge deploy-script example.com > script.sh   # edit script.sh, then:
+bin/forge deploy-script-set example.com --file script.sh -d
 ```
 
 ### Environment
@@ -133,14 +154,15 @@ bin/forge -j events -n 5 | jq '.data[].attributes.description'
 | `FORGE_ORG` | Default organization slug |
 | `FORGE_SERVER` | Default server name or id |
 | `FORGE_DEBUG` | `1` prints a short backtrace on errors (never the token) |
+| `FORGE_NO_BROWSER` | `1` stops successful writes from opening the Forge page in a browser |
 | `NO_COLOR` | Disables color in human output |
 
 ### Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success |
-| 1 | Usage error, ambiguous name, network failure, or other error |
+| 0 | Success, including dry runs and writes that change nothing |
+| 1 | Usage error, ambiguous name, guard refused or confirmation mismatch, `deploy --wait` ending in failure or timing out, network failure, or other error |
 | 2 | Auth: `FORGE_API_KEY` missing, rejected (401), or lacking permission (403) |
 | 3 | Not found: HTTP 404 or a name that matches nothing |
 | 4 | API error: any other non-2xx response, including 422 validation and 429 after one retry |

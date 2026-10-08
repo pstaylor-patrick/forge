@@ -1,0 +1,210 @@
+# frozen_string_literal: true
+
+require_relative "spec_helper"
+require "json"
+require "forge_cli/endpoints"
+
+# Every request builder checked against the API snapshot in
+# docs/forge-openapi.json: the path matches a template, the method exists on
+# it, query keys are declared parameters, every body key is a property of the
+# request schema, every required property is present, and values fit the
+# declared types and enums. Refresh the snapshot, then run this file.
+describe "Endpoints against docs/forge-openapi.json" do
+  SNAPSHOT = JSON.parse(File.read(File.expand_path("../docs/forge-openapi.json", __dir__)))
+  EP = ForgeCli::Endpoints
+
+  # Module functions that build parts of requests rather than requests.
+  HELPERS = %i[compact_body events_query get org_path segment server_path site_path write].freeze
+
+  # Query keys the API honors but the snapshot does not declare.
+  UNDECLARED_QUERY = { org_site: ["include"] }.freeze
+
+  # One or more sample calls per builder; write builders get a minimal call and
+  # one with every optional key, so each body key is checked.
+  SAMPLES = {
+    user: [-> { EP.user }],
+    orgs: [-> { EP.orgs }],
+    servers: [-> { EP.servers("my-org") }],
+    server: [-> { EP.server("my-org", 10) }],
+    org_sites: [-> { EP.org_sites("my-org") }],
+    org_site: [-> { EP.org_site("my-org", 20) }],
+    server_sites: [-> { EP.server_sites("my-org", 10) }],
+    deployments: [-> { EP.deployments("my-org", 10, 20, size: 10) }],
+    deployment: [-> { EP.deployment("my-org", 10, 20, 30) }],
+    deployment_log: [-> { EP.deployment_log("my-org", 10, 20, 30) }],
+    deployment_status: [-> { EP.deployment_status("my-org", 10, 20) }],
+    deploy_script: [-> { EP.deploy_script("my-org", 10, 20) }],
+    environment: [-> { EP.environment("my-org", 10, 20) }],
+    domains: [-> { EP.domains("my-org", 10, 20) }],
+    site_certificates: [-> { EP.site_certificates("my-org", 10, 20) }],
+    site_log: EP::SITE_LOG_TYPES.map { |type| -> { EP.site_log("my-org", 10, 20, type) } },
+    schemas: [-> { EP.schemas("my-org", 10) }],
+    db_users: [-> { EP.db_users("my-org", 10) }],
+    daemons: [-> { EP.daemons("my-org", 10) }],
+    daemon_log: [-> { EP.daemon_log("my-org", 10, 30) }],
+    firewall_rules: [-> { EP.firewall_rules("my-org", 10) }],
+    server_log: [-> { EP.server_log("my-org", 10, "nginx-access") }],
+    server_jobs: [-> { EP.server_jobs("my-org", 10) }],
+    site_jobs: [-> { EP.site_jobs("my-org", 10, 20) }],
+    server_job_output: [-> { EP.server_job_output("my-org", 10, 30) }],
+    site_job_output: [-> { EP.site_job_output("my-org", 10, 20, 30) }],
+    org_events: [-> { EP.org_events("my-org", size: 20) }],
+    server_events: [-> { EP.server_events("my-org", 10, size: 20) }],
+    event_output: [-> { EP.event_output("my-org", 10, 30) }],
+    # writes
+    deploy: [-> { EP.deploy("my-org", 10, 20) }],
+    put_environment: [-> { EP.put_environment("my-org", 10, 20, content: "A=1\n") },
+                      -> { EP.put_environment("my-org", 10, 20, content: "A=1\n", cache: true, queues: false) }],
+    put_deploy_script: [-> { EP.put_deploy_script("my-org", 10, 20, content: "git pull\n") },
+                        -> { EP.put_deploy_script("my-org", 10, 20, content: "git pull\n", auto_source: true) }]
+  }.freeze
+
+  # -- schema helpers ---------------------------------------------------------
+
+  def deref(schema)
+    while schema.is_a?(Hash) && schema["$ref"]
+      schema = schema["$ref"].delete_prefix("#/").split("/").reduce(SNAPSHOT) { |node, key| node.fetch(key) }
+    end
+    schema
+  end
+
+  # $ref followed and allOf merged into one {properties, required} view.
+  def resolve(schema)
+    schema = deref(schema)
+    return schema unless schema.is_a?(Hash) && schema["allOf"]
+
+    parts = schema["allOf"].map { |part| resolve(part) }
+    merged = schema.except("allOf")
+    merged["properties"] = parts.reduce(schema["properties"] || {}) { |acc, part| acc.merge(part["properties"] || {}) }
+    merged["required"] = parts.flat_map { |part| part["required"] || [] } + (schema["required"] || [])
+    merged
+  end
+
+  def json_type(value)
+    case value
+    when nil then "null"
+    when true, false then "boolean"
+    when Integer then "integer"
+    when Numeric then "number"
+    when String then "string"
+    when Array then "array"
+    when Hash then "object"
+    end
+  end
+
+  # Problems with value against schema, as strings; [] when it fits.
+  def problems(value, schema, where)
+    schema = resolve(schema)
+    return [] unless schema.is_a?(Hash)
+
+    alternatives = schema["anyOf"] || schema["oneOf"]
+    if alternatives
+      found = alternatives.map { |alt| problems(value, alt, where) }
+      return found.any?(&:empty?) ? [] : ["#{where}: #{value.inspect} fits none of anyOf/oneOf"]
+    end
+
+    out = []
+    types = Array(schema["type"])
+    type = json_type(value)
+    unless types.empty? || types.include?(type) || (type == "integer" && types.include?("number"))
+      out << "#{where}: #{type} is not #{types.join('|')}"
+    end
+    if schema["enum"] && !schema["enum"].include?(value)
+      out << "#{where}: #{value.inspect} is not one of #{schema['enum'].join(', ')}"
+    end
+    out.concat(object_problems(value, schema, where)) if value.is_a?(Hash)
+    out
+  end
+
+  def object_problems(body, schema, where)
+    properties = schema["properties"] || {}
+    out = body.keys.map(&:to_s).reject { |key| properties.key?(key) }
+              .map { |key| "#{where}: #{key} is not a property (#{properties.keys.join(', ')})" }
+    out.concat((schema["required"] || []).reject { |key| body.key?(key.to_sym) || body.key?(key) }
+                                          .map { |key| "#{where}: required #{key} is missing" })
+    body.each do |key, value|
+      out.concat(problems(value, properties[key.to_s], "#{where}.#{key}")) if properties.key?(key.to_s)
+    end
+    out
+  end
+
+  # The template the router would pick: a literal match beats a parameter.
+  def template_for(path)
+    SNAPSHOT["paths"].keys
+                     .select { |template| Regexp.new("\\A#{Regexp.escape(template).gsub(/\\\{[^}]+\\\}/, '[^/]+')}\\z").match?(path) }
+                     .min_by { |template| template.count("{") }
+  end
+
+  def query_problems(name, request, operation, path_item)
+    params = (operation["parameters"] || []) + (path_item["parameters"] || [])
+    declared = params.select { |p| p["in"] == "query" }.to_h { |p| [p["name"], p["schema"]] }
+    request.query.flat_map do |key, value|
+      next [] if UNDECLARED_QUERY.fetch(name, []).include?(key)
+      next ["query #{key} is not a declared parameter"] unless declared.key?(key)
+
+      schema = resolve(declared[key])
+      # explode: false arrays accept a single value, e.g. sort=-created_at
+      schema = schema["items"] if schema.is_a?(Hash) && schema["type"] == "array" && !value.is_a?(Array)
+      problems(value, schema, "query #{key}")
+    end
+  end
+
+  def body_problems(request, operation)
+    body_spec = operation["requestBody"]
+    return(body_spec&.dig("required") ? ["body is required"] : []) if request.body.nil?
+    return ["sends a body, but the operation takes none"] unless body_spec
+
+    schema = body_spec.dig("content", "application/json", "schema")
+    return ["no application/json request schema"] unless schema
+
+    problems(request.body, schema, "body")
+  end
+
+  # -- specs ------------------------------------------------------------------
+
+  it "has a sample for every builder" do
+    builders = EP.singleton_methods - HELPERS
+    assert_equal builders.sort, SAMPLES.keys.sort
+  end
+
+  SAMPLES.each do |name, calls|
+    it "#{name} matches the snapshot" do
+      calls.each do |call|
+        request = call.call
+        template = template_for(request.path)
+        refute_nil template, "#{name}: #{request.path} matches no path in the snapshot"
+        path_item = SNAPSHOT["paths"][template]
+        operation = path_item[request.method.downcase]
+        refute_nil operation, "#{name}: #{request.method} is not defined on #{template}"
+
+        found = query_problems(name, request, operation, path_item) + body_problems(request, operation)
+        assert_empty found, "#{name} (#{request.method} #{template}):\n  #{found.join("\n  ")}"
+      end
+    end
+  end
+
+  describe "the checker itself" do
+    it "flags an unknown body key, a missing required key, a bad type, and a bad enum" do
+      schema = { "type" => "object", "required" => %w[a], "properties" => {
+        "a" => { "type" => "string" }, "b" => { "type" => "string", "enum" => %w[x y] }
+      } }
+      found = problems({ b: "z", c: 1 }, schema, "body")
+      assert_equal 3, found.size
+      assert(found.any? { |p| p.include?("c is not a property") })
+      assert(found.any? { |p| p.include?("required a is missing") })
+      assert(found.any? { |p| p.include?("is not one of x, y") })
+      assert_equal ["body.a: integer is not string"], problems({ a: 1 }, schema, "body")
+    end
+
+    it "prefers a literal path over a parameter" do
+      assert_equal "/orgs/{organization}/servers/{server}/sites/{site}/deployments/status",
+                   template_for("/orgs/my-org/servers/10/sites/20/deployments/status")
+    end
+
+    it "rejects a body on an operation that takes none" do
+      operation = SNAPSHOT["paths"][template_for(EP.deploy("my-org", 10, 20).path)]["post"]
+      request = ForgeCli::Request.new(method: "POST", path: "/x", body: { a: 1 })
+      assert_equal ["sends a body, but the operation takes none"], body_problems(request, operation)
+    end
+  end
+end

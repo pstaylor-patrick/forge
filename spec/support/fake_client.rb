@@ -4,6 +4,8 @@ require "forge_cli/error"
 
 # Answers fetch/fetch_all from canned bodies keyed by request path and records
 # every call. perform records the request and returns a canned body (or {}).
+# A canned value that responds to #call is called with the request each time,
+# so a spec can answer a sequence (deploy --wait polling).
 class FakeClient
   attr_reader :calls, :performed
 
@@ -17,16 +19,20 @@ class FakeClient
 
   def fetch(request)
     @calls << [:fetch, request]
-    @fetch.fetch(request.path) { raise ForgeCli::NotFoundError, "no canned fetch for #{request.path}" }
+    answer(@fetch.fetch(request.path) { raise ForgeCli::NotFoundError, "no canned fetch for #{request.path}" }, request)
   end
 
   def fetch_all(request)
     @calls << [:fetch_all, request]
-    @fetch_all.fetch(request.path) { raise ForgeCli::NotFoundError, "no canned fetch_all for #{request.path}" }
+    answer(@fetch_all.fetch(request.path) { raise ForgeCli::NotFoundError, "no canned fetch_all for #{request.path}" }, request)
   end
 
   def perform(request)
     @performed << request
-    @perform.fetch(request.path, {})
+    answer(@perform.fetch(request.path, {}), request)
   end
+
+  private
+
+  def answer(value, request) = value.respond_to?(:call) ? value.call(request) : value
 end

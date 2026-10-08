@@ -20,6 +20,16 @@ module ForgeCli
   class AmbiguousError < Error; end
   class GuardRefused < Error; end   # destructive command, stdin not a TTY, no --yes
   class Aborted < Error; end        # typed confirmation did not match
-  class DeployFailed < Error; end   # deploy --wait ended in a failed status or timed out
+  # deploy --wait ended in a failed status or timed out. affected is the site
+  # the deployment ran on, so bin/forge can still open it in the browser.
+  class DeployFailed < Error
+    attr_reader :affected
+
+    def initialize(msg = nil, affected: nil, **)
+      super(msg, **)
+      @affected = affected
+    end
+  end
+
   class PartialFailure < Error; end # reserved (exit 5)
 end
