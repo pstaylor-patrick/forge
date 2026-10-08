@@ -93,7 +93,90 @@ module ForgeCli
             { content: content, auto_source: auto_source })
     end
 
+    # -- writes: firewall, services, server actions --------------------------
+
+    # port is a string (the API types it string|null, and allows ranges).
+    # ip_address is a plain string: the snapshot's allOf narrows its first
+    # part's untyped object to string, and RuleResource returns a string.
+    def create_firewall_rule(org, server, name:, type:, port: nil, ip_address: nil)
+      write("POST", "#{server_path(org, server)}/firewall-rules",
+            { name: name, type: type, port: port&.to_s, ip_address: ip_address })
+    end
+
+    def delete_firewall_rule(org, server, id) = write("DELETE", "#{server_path(org, server)}/firewall-rules/#{segment(id)}")
+
+    FIREWALL_TYPES = %w[allow deny].freeze
+
+    # The actions the API accepts per service (one endpoint per service).
+    SERVICE_ACTIONS = {
+      "nginx" => %w[reboot stop],
+      "mysql" => %w[reboot stop],
+      "postgres" => %w[reboot stop],
+      "redis" => %w[reboot],
+      "supervisor" => %w[reboot],
+      "php" => %w[reboot reload]
+    }.freeze
+
+    # version is required for php and ignored elsewhere.
+    def service_action(org, server, service, action:, version: nil)
+      unless SERVICE_ACTIONS.fetch(service, []).include?(action)
+        raise ArgumentError, "unknown action #{action} for service #{service}"
+      end
+
+      write("POST", "#{server_path(org, server)}/services/#{segment(service)}/actions",
+            { action: action, version: version })
+    end
+
+    SERVER_ACTIONS = %w[reboot power-cycle].freeze
+
+    def server_action(org, server, action:)
+      raise ArgumentError, "unknown server action: #{action}" unless SERVER_ACTIONS.include?(action)
+
+      write("POST", "#{server_path(org, server)}/actions", { action: action })
+    end
+
+    # -- writes: background processes (daemons) ------------------------------
+
+    DAEMON_USERS = %w[forge root].freeze
+
+    def create_daemon(org, server, name:, command:, user:, processes:, directory: nil, site_id: nil,
+                      startsecs: nil, stopwaitsecs: nil, stopsignal: nil)
+      write("POST", "#{server_path(org, server)}/background-processes",
+            { name: name, command: command, user: user, processes: processes, directory: directory,
+              site_id: site_id, startsecs: startsecs, stopwaitsecs: stopwaitsecs, stopsignal: stopsignal })
+    end
+
+    def delete_daemon(org, server, id) = write("DELETE", "#{server_path(org, server)}/background-processes/#{segment(id)}")
+
+    def daemon_action(org, server, id, action:)
+      write("POST", "#{server_path(org, server)}/background-processes/#{segment(id)}/actions", { action: action })
+    end
+
+    # -- writes: scheduled jobs ------------------------------------------------
+
+    JOB_FREQUENCIES = %w[minutely hourly nightly weekly monthly reboot custom].freeze
+
+    def create_server_job(org, server, command:, user:, frequency:, name: nil, cron: nil, heartbeat: nil)
+      write("POST", "#{server_path(org, server)}/scheduled-jobs",
+            job_body(command: command, user: user, frequency: frequency, name: name, cron: cron, heartbeat: heartbeat))
+    end
+
+    def create_site_job(org, server, site, command:, user:, frequency:, name: nil, cron: nil, heartbeat: nil)
+      write("POST", "#{site_path(org, server, site)}/scheduled-jobs",
+            job_body(command: command, user: user, frequency: frequency, name: name, cron: cron, heartbeat: heartbeat))
+    end
+
+    def delete_server_job(org, server, id) = write("DELETE", "#{server_path(org, server)}/scheduled-jobs/#{segment(id)}")
+
+    def delete_site_job(org, server, site, id)
+      write("DELETE", "#{site_path(org, server, site)}/scheduled-jobs/#{segment(id)}")
+    end
+
     # -- helpers ------------------------------------------------------------
+
+    def job_body(command:, user:, frequency:, name:, cron:, heartbeat:)
+      { command: command, user: user, frequency: frequency, name: name, cron: cron, heartbeat: heartbeat }
+    end
 
     def get(path, query = {}) = Request.new(method: "GET", path: path, query: query)
 

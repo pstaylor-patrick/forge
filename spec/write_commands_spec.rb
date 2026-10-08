@@ -6,13 +6,17 @@ require_relative "support/tty_input"
 require "json"
 require "stringio"
 require "tempfile"
+require "forge_cli/browser"
 require "forge_cli/context"
 require "forge_cli/formatter"
 
 # Write commands against canned responses. Nothing here opens a socket: every
 # "sent" request lands in FakeClient#performed.
 describe "write commands" do
-  SITE = "/orgs/my-org/servers/10/sites/20"
+  SERVER = "/orgs/my-org/servers/10"
+  SITE = "#{SERVER}/sites/20"
+  SITE_AFFECTED = ForgeCli::Affected.new(org: "my-org", server_id: 10, site_id: 20)
+  SERVER_AFFECTED = ForgeCli::Affected.new(org: "my-org", server_id: 10)
   SECRET_ENV = "APP_KEY=base64:topsecret\nDB_PASSWORD=\"hunter2 x\"\n# note\n"
   SCRIPT = "cd /home/forge/example.com\ngit pull origin main\n"
   SECRETS = %w[topsecret hunter2].freeze
@@ -20,9 +24,15 @@ describe "write commands" do
   def client(deployment_statuses: %w[finished])
     statuses = deployment_statuses.dup
     FakeClient.new(
-      fetch_all: { "/orgs/my-org/servers" => [{ id: "10", type: "servers", attributes: { name: "web-1" } }],
+      fetch_all: { "/orgs/my-org/servers" => [{ id: "10", type: "servers", attributes: { name: "web-1", php_version: "php84" } }],
                    "/orgs/my-org/sites" => [{ id: "20", type: "sites", attributes: { name: "example.com" },
-                                              relationships: { server: { data: { type: "servers", id: "10" } } } }] },
+                                              relationships: { server: { data: { type: "servers", id: "10" } } } }],
+                   "#{SERVER}/firewall-rules" => [{ id: "45", type: "rules", attributes: { name: "ssh-office", port: "22" } }],
+                   "#{SERVER}/background-processes" => [{ id: "30", type: "backgroundProcesses",
+                                                          attributes: { command: "php artisan queue:work" } }],
+                   "#{SERVER}/scheduled-jobs" => [{ id: "40", type: "scheduledJobs", attributes: { name: "scheduler", command: "php artisan schedule:run" } },
+                                                  { id: "41", type: "scheduledJobs", attributes: { name: nil, command: "php artisan backup" } }],
+                   "#{SITE}/scheduled-jobs" => [{ id: "50", type: "scheduledJobs", attributes: { name: "site-job", command: "php artisan inspire" } }] },
       fetch: { "#{SITE}/environment" => { data: { attributes: { content: SECRET_ENV } } },
                "#{SITE}/deployments/script" => { data: { attributes: { content: SCRIPT, auto_source: false } } },
                "#{SITE}/deployments/99" => lambda { |_|
@@ -57,7 +67,19 @@ describe "write commands" do
   DRY_RUNS = {
     "deploy" => [["example.com", "-d"], "POST", "#{SITE}/deployments"],
     "env-set" => [["example.com", "--set", "NEW_KEY=1", "-d"], "PUT", "#{SITE}/environment"],
-    "deploy-script-set" => [["example.com", "--stdin", "-d"], "PUT", "#{SITE}/deployments/script"]
+    "deploy-script-set" => [["example.com", "--stdin", "-d"], "PUT", "#{SITE}/deployments/script"],
+    "firewall-create" => [["--name", "probe", "--port", "8443", "--ip", "203.0.113.7", "-d"], "POST",
+                          "#{SERVER}/firewall-rules"],
+    "firewall-delete" => [["ssh-office", "-d"], "DELETE", "#{SERVER}/firewall-rules/45"],
+    "service" => [%w[nginx stop -d], "POST", "#{SERVER}/services/nginx/actions"],
+    "reboot" => [["-d"], "POST", "#{SERVER}/actions"],
+    "daemon-create" => [["--name", "probe", "--command", "php artisan probe", "-d"], "POST",
+                        "#{SERVER}/background-processes"],
+    "daemon-delete" => [%w[30 -d], "DELETE", "#{SERVER}/background-processes/30"],
+    "daemon-restart" => [%w[30 -d], "POST", "#{SERVER}/background-processes/30/actions"],
+    "job-create" => [["--command", "php artisan schedule:run", "--frequency", "minutely", "-d"], "POST",
+                     "#{SERVER}/scheduled-jobs"],
+    "job-delete" => [%w[scheduler -d], "DELETE", "#{SERVER}/scheduled-jobs/40"]
   }.freeze
 
   describe "-d/--dry-run" do
@@ -86,18 +108,25 @@ describe "write commands" do
         run = run_write(name, argv.reject { |a| a == "--stdin" } + (name == "deploy-script-set" ? ["--file", script_file("x\n")] : []),
                         stdin: stdin)
         assert_empty run[:client].performed
-        refute_includes run[:err], "Type example.com"
+        refute_includes run[:err], "to confirm"
       end
     end
   end
 
   describe "guarded commands" do
+    # name => [argv, method, path, token typed at the prompt, affected]
     GUARDED = {
-      "env-set" => [["example.com", "--set", "NEW_KEY=1"], "#{SITE}/environment"],
-      "deploy-script-set" => [["example.com", "--file", :script], "#{SITE}/deployments/script"]
+      "env-set" => [["example.com", "--set", "NEW_KEY=1"], "PUT", "#{SITE}/environment", "example.com", SITE_AFFECTED],
+      "deploy-script-set" => [["example.com", "--file", :script], "PUT", "#{SITE}/deployments/script", "example.com",
+                              SITE_AFFECTED],
+      "firewall-delete" => [["ssh-office"], "DELETE", "#{SERVER}/firewall-rules/45", "ssh-office", SERVER_AFFECTED],
+      "service" => [%w[mysql stop], "POST", "#{SERVER}/services/mysql/actions", "web-1", SERVER_AFFECTED],
+      "reboot" => [[], "POST", "#{SERVER}/actions", "web-1", SERVER_AFFECTED],
+      "daemon-delete" => [["30"], "DELETE", "#{SERVER}/background-processes/30", "30", SERVER_AFFECTED],
+      "job-delete" => [["scheduler"], "DELETE", "#{SERVER}/scheduled-jobs/40", "scheduler", SERVER_AFFECTED]
     }.freeze
 
-    GUARDED.each do |name, (argv, path)|
+    GUARDED.each do |name, (argv, method, path, token, affected)|
       it "#{name}: refuses a non-TTY stdin without --yes and sends nothing" do
         args = argv.map { |a| a == :script ? script_file("echo new\n") : a }
         fake = client
@@ -105,27 +134,27 @@ describe "write commands" do
         assert_empty fake.performed
       end
 
-      it "#{name}: sends exactly one PUT with --yes and returns the affected site" do
+      it "#{name}: sends exactly one #{method} with --yes and returns what it affected" do
         args = argv.map { |a| a == :script ? script_file("echo new\n") : a }
         run = run_write(name, args + ["--yes"])
         assert_equal 1, run[:client].performed.size
         request = run[:client].performed.first
-        assert_equal "PUT", request.method
+        assert_equal method, request.method
         assert_equal path, request.path
-        assert_equal ForgeCli::Affected.new(org: "my-org", server_id: 10, site_id: 20), run[:result]
+        assert_equal affected, run[:result]
       end
 
-      it "#{name}: sends after the site name is typed on a TTY" do
+      it "#{name}: sends after #{token} is typed on a TTY" do
         args = argv.map { |a| a == :script ? script_file("echo new\n") : a }
-        run = run_write(name, args, stdin: TtyInput.new("example.com\n"))
+        run = run_write(name, args, stdin: TtyInput.new("#{token}\n"))
         assert_equal 1, run[:client].performed.size
-        assert_includes run[:err], "Type example.com to confirm"
+        assert_includes run[:err], "Type #{token} to confirm"
       end
 
       it "#{name}: aborts on a wrong name and sends nothing" do
         args = argv.map { |a| a == :script ? script_file("echo new\n") : a }
         fake = client
-        assert_raises(ForgeCli::Aborted) { run_write(name, args, stdin: TtyInput.new("example.org\n"), fake: fake) }
+        assert_raises(ForgeCli::Aborted) { run_write(name, args, stdin: TtyInput.new("#{token}x\n"), fake: fake) }
         assert_empty fake.performed
       end
     end
@@ -282,6 +311,199 @@ describe "write commands" do
         run_write("deploy-script-set", ["example.com", "--file", "/nonexistent/forge-script", "--yes"], fake: fake)
       end
       assert_empty fake.calls
+    end
+  end
+
+  # Asserts a usage error raised before any request (no fetch, no perform).
+  def assert_rejected(name, argv, message)
+    fake = client
+    error = assert_raises(ForgeCli::Error) { run_write(name, argv, fake: fake) }
+    assert_includes error.message, message
+    assert_empty fake.calls
+    assert_empty fake.performed
+  end
+
+  def sent(run) = run[:client].performed.map { |r| [r.method, r.path, r.body] }
+
+  describe "firewall-create" do
+    it "sends name, type, port as a string, and ip_address as a string, unguarded" do
+      run = run_write("firewall-create", ["--name", "probe", "--port", "8443", "--ip", "203.0.113.7"])
+      assert_equal [["POST", "#{SERVER}/firewall-rules",
+                     { name: "probe", type: "allow", port: "8443", ip_address: "203.0.113.7" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "leaves port and ip out when not given, and takes --type deny" do
+      run = run_write("firewall-create", ["--name", "block-all", "--type", "deny"])
+      assert_equal({ name: "block-all", type: "deny" }, run[:client].performed.first.body)
+    end
+
+    it "rejects a missing or long name, a bad type, and a bad port before any request" do
+      assert_rejected("firewall-create", ["--port", "22"], "--name is required")
+      assert_rejected("firewall-create", ["--name", "x" * 51], "at most 50")
+      assert_rejected("firewall-create", ["--name", "x", "--type", "reject"], "--type must be one of allow, deny")
+      assert_rejected("firewall-create", ["--name", "x", "--port", "ssh"], "--port must be")
+    end
+  end
+
+  describe "firewall-delete" do
+    it "names the rule and server in the prompt" do
+      run = run_write("firewall-delete", ["45"], stdin: TtyInput.new("ssh-office\n"))
+      assert_includes run[:err], "delete firewall rule 45 (ssh-office) on server web-1"
+      assert_equal [["DELETE", "#{SERVER}/firewall-rules/45", nil]], sent(run)
+    end
+
+    it "fails with NotFoundError for an unknown rule and sends nothing" do
+      fake = client
+      assert_raises(ForgeCli::NotFoundError) { run_write("firewall-delete", ["nope", "--yes"], fake: fake) }
+      assert_empty fake.performed
+    end
+  end
+
+  describe "service" do
+    it "sends restart as reboot without a guard" do
+      run = run_write("service", %w[nginx restart])
+      assert_equal [["POST", "#{SERVER}/services/nginx/actions", { action: "reboot" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "defaults the php version to the server's php_version" do
+      run = run_write("service", %w[php restart])
+      assert_equal({ action: "reboot", version: "php84" }, run[:client].performed.first.body)
+    end
+
+    it "takes --php-version and reload for php" do
+      run = run_write("service", %w[php reload --php-version php83])
+      assert_equal({ action: "reload", version: "php83" }, run[:client].performed.first.body)
+    end
+
+    it "accepts every action in the table for every service" do
+      ForgeCli::Commands::Service.actions.each do |service, actions|
+        actions.each do |action|
+          run = run_write("service", [service, action, "--yes"])
+          assert_equal "#{SERVER}/services/#{service}/actions", run[:client].performed.first.path
+        end
+      end
+    end
+
+    it "validates service and action against the table before any request" do
+      assert_rejected("service", %w[redis stop], "redis does not support 'stop'; it supports restart, reboot")
+      assert_rejected("service", %w[supervisor reload], "supervisor does not support 'reload'")
+      assert_rejected("service", %w[nginx reload], "nginx does not support 'reload'")
+      assert_rejected("service", %w[apache restart], "unknown service 'apache'")
+      assert_rejected("service", %w[nginx restart --php-version php84], "only applies to the php service")
+      assert_rejected("service", %w[php restart --php-version 8.4], "must look like php84")
+      assert_rejected("service", %w[nginx], "missing SERVICE and ACTION")
+    end
+
+    it "fails when the server reports no php_version and none is given" do
+      fake = FakeClient.new(fetch_all: { "/orgs/my-org/servers" => [{ id: "10", attributes: { name: "web-1", php_version: nil } }] })
+      error = assert_raises(ForgeCli::Error) { run_write("service", %w[php restart], fake: fake) }
+      assert_includes error.message, "--php-version"
+      assert_empty fake.performed
+    end
+  end
+
+  describe "reboot" do
+    it "sends reboot by default and power-cycle with --power-cycle" do
+      assert_equal [["POST", "#{SERVER}/actions", { action: "reboot" }]], sent(run_write("reboot", ["--yes"]))
+      assert_equal({ action: "power-cycle" }, run_write("reboot", ["--power-cycle", "--yes"])[:client].performed.first.body)
+    end
+
+    it "shows power-cycle in the dry run" do
+      run = run_write("reboot", ["--power-cycle", "-d"])
+      assert_includes run[:out], "\"power-cycle\""
+    end
+  end
+
+  describe "daemon-create" do
+    it "defaults user to forge and processes to 1, unguarded" do
+      run = run_write("daemon-create", ["--name", "probe", "--command", "php artisan probe"])
+      assert_equal [["POST", "#{SERVER}/background-processes",
+                     { name: "probe", command: "php artisan probe", user: "forge", processes: 1 }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "sends every optional key and resolves --site to its id" do
+      run = run_write("daemon-create", ["--name", "w", "--command", "c", "--user", "root", "--processes", "3",
+                                        "--directory", "/home/forge/example.com", "--site", "example.com",
+                                        "--startsecs", "0", "--stopwaitsecs", "15", "--stopsignal", "SIGINT"])
+      assert_equal({ name: "w", command: "c", user: "root", processes: 3, directory: "/home/forge/example.com",
+                     site_id: 20, startsecs: 0, stopwaitsecs: 15, stopsignal: "SIGINT" },
+                   run[:client].performed.first.body)
+    end
+
+    it "rejects missing name or command, a bad user, and a bad count before any request" do
+      assert_rejected("daemon-create", ["--command", "c"], "--name is required")
+      assert_rejected("daemon-create", ["--name", "n"], "--command is required")
+      assert_rejected("daemon-create", ["--name", "n", "--command", "c", "--user", "www-data"], "--user must be one of")
+      assert_rejected("daemon-create", ["--name", "n", "--command", "c", "--processes", "0"], "--processes")
+    end
+  end
+
+  describe "daemon-delete and daemon-restart" do
+    it "daemon-delete shows the command in the prompt and takes the id as the token" do
+      run = run_write("daemon-delete", ["30"], stdin: TtyInput.new("30\n"))
+      assert_includes run[:err], "delete background process 30 (php artisan queue:work)"
+      assert_equal [["DELETE", "#{SERVER}/background-processes/30", nil]], sent(run)
+    end
+
+    it "daemon-restart sends the restart action without a guard" do
+      run = run_write("daemon-restart", ["30"])
+      assert_equal [["POST", "#{SERVER}/background-processes/30/actions", { action: "restart" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "rejects a non-numeric id and an unknown id without sending" do
+      fake = client
+      assert_raises(ForgeCli::Error) { run_write("daemon-restart", ["worker"], fake: fake) }
+      assert_raises(ForgeCli::NotFoundError) { run_write("daemon-restart", ["99"], fake: fake) }
+      assert_empty fake.performed
+    end
+  end
+
+  describe "job-create" do
+    it "schedules a server job with user forge, unguarded" do
+      run = run_write("job-create", ["--command", "php artisan schedule:run", "--frequency", "minutely"])
+      assert_equal [["POST", "#{SERVER}/scheduled-jobs",
+                     { command: "php artisan schedule:run", user: "forge", frequency: "minutely" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "schedules a site job with --site and sends custom cron, name, and heartbeat" do
+      run = run_write("job-create", ["--command", "x", "--frequency", "custom", "--cron", "0 * * * *", "--name", "hourly",
+                                     "--heartbeat", "--user", "root", "--site", "example.com"])
+      assert_equal [["POST", "#{SITE}/scheduled-jobs",
+                     { command: "x", user: "root", frequency: "custom", name: "hourly", cron: "0 * * * *",
+                       heartbeat: true }]], sent(run)
+      assert_equal SITE_AFFECTED, run[:result]
+    end
+
+    it "needs --cron exactly when the frequency is custom, checked before any request" do
+      assert_rejected("job-create", ["--command", "x", "--frequency", "custom"], "--frequency custom needs --cron")
+      assert_rejected("job-create", ["--command", "x", "--frequency", "hourly", "--cron", "0 * * * *"],
+                      "--cron only applies with --frequency custom")
+    end
+
+    it "rejects a missing command or frequency and an unknown frequency before any request" do
+      assert_rejected("job-create", ["--frequency", "hourly"], "--command is required")
+      assert_rejected("job-create", ["--command", "x"], "--frequency is required")
+      assert_rejected("job-create", ["--command", "x", "--frequency", "daily"], "--frequency must be one of")
+    end
+  end
+
+  describe "job-delete" do
+    it "uses the id as the token for an unnamed job" do
+      run = run_write("job-delete", ["41"], stdin: TtyInput.new("41\n"))
+      assert_includes run[:err], "Type 41 to confirm"
+      assert_includes run[:err], "41 (php artisan backup)"
+      assert_equal [["DELETE", "#{SERVER}/scheduled-jobs/41", nil]], sent(run)
+    end
+
+    it "deletes a site job with --site and returns the site" do
+      run = run_write("job-delete", ["site-job", "--site", "example.com", "--yes"])
+      assert_equal [["DELETE", "#{SITE}/scheduled-jobs/50", nil]], sent(run)
+      assert_equal SITE_AFFECTED, run[:result]
     end
   end
 end

@@ -14,7 +14,7 @@ describe "Endpoints against docs/forge-openapi.json" do
   EP = ForgeCli::Endpoints
 
   # Module functions that build parts of requests rather than requests.
-  HELPERS = %i[compact_body events_query get org_path segment server_path site_path write].freeze
+  HELPERS = %i[compact_body events_query get job_body org_path segment server_path site_path write].freeze
 
   # Query keys the API honors but the snapshot does not declare.
   UNDECLARED_QUERY = { org_site: ["include"] }.freeze
@@ -56,7 +56,41 @@ describe "Endpoints against docs/forge-openapi.json" do
     put_environment: [-> { EP.put_environment("my-org", 10, 20, content: "A=1\n") },
                       -> { EP.put_environment("my-org", 10, 20, content: "A=1\n", cache: true, queues: false) }],
     put_deploy_script: [-> { EP.put_deploy_script("my-org", 10, 20, content: "git pull\n") },
-                        -> { EP.put_deploy_script("my-org", 10, 20, content: "git pull\n", auto_source: true) }]
+                        -> { EP.put_deploy_script("my-org", 10, 20, content: "git pull\n", auto_source: true) }],
+    create_firewall_rule: [-> { EP.create_firewall_rule("my-org", 10, name: "ssh-office", type: "allow") }] +
+      EP::FIREWALL_TYPES.map do |type|
+        -> { EP.create_firewall_rule("my-org", 10, name: "ssh-office", type: type, port: 22, ip_address: "203.0.113.7") }
+      end,
+    delete_firewall_rule: [-> { EP.delete_firewall_rule("my-org", 10, 30) }],
+    service_action: EP::SERVICE_ACTIONS.flat_map do |service, actions|
+      actions.map do |action|
+        -> { EP.service_action("my-org", 10, service, action: action, version: service == "php" ? "php84" : nil) }
+      end
+    end,
+    server_action: EP::SERVER_ACTIONS.map { |action| -> { EP.server_action("my-org", 10, action: action) } },
+    create_daemon: [-> { EP.create_daemon("my-org", 10, name: "worker", command: "php artisan queue:work", user: "forge", processes: 1) }] +
+      EP::DAEMON_USERS.map do |user|
+        lambda {
+          EP.create_daemon("my-org", 10, name: "worker", command: "php artisan queue:work", user: user, processes: 2,
+                                         directory: "/home/forge/example.com", site_id: 20, startsecs: 1,
+                                         stopwaitsecs: 10, stopsignal: "SIGTERM")
+        }
+      end,
+    delete_daemon: [-> { EP.delete_daemon("my-org", 10, 30) }],
+    daemon_action: [-> { EP.daemon_action("my-org", 10, 30, action: "restart") }],
+    create_server_job: EP::JOB_FREQUENCIES.map do |frequency|
+      -> { EP.create_server_job("my-org", 10, command: "php artisan schedule:run", user: "forge", frequency: frequency) }
+    end + [lambda {
+      EP.create_server_job("my-org", 10, command: "php artisan schedule:run", user: "forge", frequency: "custom",
+                                         name: "scheduler", cron: "0 * * * *", heartbeat: true)
+    }],
+    create_site_job: [-> { EP.create_site_job("my-org", 10, 20, command: "php artisan schedule:run", user: "forge", frequency: "minutely") },
+                      lambda {
+                        EP.create_site_job("my-org", 10, 20, command: "php artisan schedule:run", user: "forge",
+                                                             frequency: "custom", name: "scheduler", cron: "0 * * * *", heartbeat: false)
+                      }],
+    delete_server_job: [-> { EP.delete_server_job("my-org", 10, 30) }],
+    delete_site_job: [-> { EP.delete_site_job("my-org", 10, 20, 30) }]
   }.freeze
 
   # -- schema helpers ---------------------------------------------------------
@@ -180,6 +214,43 @@ describe "Endpoints against docs/forge-openapi.json" do
         found = query_problems(name, request, operation, path_item) + body_problems(request, operation)
         assert_empty found, "#{name} (#{request.method} #{template}):\n  #{found.join("\n  ")}"
       end
+    end
+  end
+
+  # The CLI's own validation tables must match the snapshot's enums exactly,
+  # so a value the API drops or adds shows up here, not as a live 422.
+  describe "validation tables" do
+    def enum_of(path, method, property)
+      schema = resolve(SNAPSHOT.dig("paths", path, method, "requestBody", "content", "application/json", "schema"))
+      resolve(schema["properties"][property])["enum"]
+    end
+
+    SERVER_TEMPLATE = "/orgs/{organization}/servers/{server}"
+
+    it "SERVICE_ACTIONS lists every service endpoint and its action enum" do
+      services = SNAPSHOT["paths"].keys.filter_map { |p| p[%r{\A#{Regexp.escape(SERVER_TEMPLATE)}/services/([^/{}]+)/actions\z}, 1] }
+      assert_equal services.sort, EP::SERVICE_ACTIONS.keys.sort
+      EP::SERVICE_ACTIONS.each do |service, actions|
+        assert_equal enum_of("#{SERVER_TEMPLATE}/services/#{service}/actions", "post", "action").sort, actions.sort, service
+      end
+    end
+
+    it "SERVER_ACTIONS, FIREWALL_TYPES, DAEMON_USERS, and JOB_FREQUENCIES match their enums" do
+      assert_equal enum_of("#{SERVER_TEMPLATE}/actions", "post", "action").sort, EP::SERVER_ACTIONS.sort
+      assert_equal enum_of("#{SERVER_TEMPLATE}/firewall-rules", "post", "type").sort, EP::FIREWALL_TYPES.sort
+      assert_equal enum_of("#{SERVER_TEMPLATE}/background-processes", "post", "user").sort, EP::DAEMON_USERS.sort
+      assert_equal enum_of("#{SERVER_TEMPLATE}/scheduled-jobs", "post", "frequency").sort, EP::JOB_FREQUENCIES.sort
+    end
+
+    # Open question 7: the request schema is an allOf whose first part types
+    # ip_address as an untyped object and whose second narrows it to string.
+    # Merged, it is a string; an object is rejected.
+    it "settles the firewall ip_address as a string" do
+      schema = resolve(SNAPSHOT.dig("paths", "#{SERVER_TEMPLATE}/firewall-rules", "post", "requestBody", "content",
+                                    "application/json", "schema"))
+      assert_equal "string", schema.dig("properties", "ip_address", "type")
+      found = problems({ name: "x", type: "allow", ip_address: { address: "203.0.113.7" } }, schema, "body")
+      assert_includes found, "body.ip_address: object is not string"
     end
   end
 

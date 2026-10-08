@@ -32,12 +32,18 @@ COMMANDS = %w[
   sites site deploys deploy-log deploy-status deploy-script env domains certs logs
   dbs db-users daemons daemon-log jobs job-output firewall events event-output server-log
   deploy env-set deploy-script-set
+  firewall-create firewall-delete service reboot
+  daemon-create daemon-delete daemon-restart job-create job-delete
 ].freeze
 
 # Commands that change Forge. Each returns an Affected (nil on a dry run or
 # no-op), and bin/forge opens that page in the browser so no write is silent.
 # See lib/forge_cli/browser.rb.
-WRITE_COMMANDS = %w[deploy env-set deploy-script-set].freeze
+WRITE_COMMANDS = %w[
+  deploy env-set deploy-script-set
+  firewall-create firewall-delete service reboot
+  daemon-create daemon-delete daemon-restart job-create job-delete
+].freeze
 
 def usage(status = 1)
   puts <<~USAGE
@@ -95,9 +101,35 @@ def usage(status = 1)
       deploy-script-set SITE (--file PATH | --stdin) [--[no-]auto-source] [-y]
                                       Replace the deploy script (guarded)
 
-    Guarded writes ask you to type the site name on a TTY; pass -y/--yes to
-    confirm non-interactively (required with --stdin). A write that changes
-    nothing prints "no change" and sends nothing.
+    Server writes (all take -S SERVER):
+      firewall-create --name NAME [--port PORT] [--ip ADDR] [--type allow|deny]
+                                      Add a firewall rule (type default allow)
+      firewall-delete RULE [-y]       Remove a firewall rule by name or id (guarded)
+      service SERVICE ACTION [--php-version phpNN] [-y]
+                                      Run a service action. SERVICE: nginx, mysql, postgres,
+                                      redis, supervisor, php. ACTION: restart (sent as reboot)
+                                      or reboot for all; stop for nginx, mysql, postgres
+                                      (guarded); reload for php. php's version defaults to
+                                      the server's php_version
+      reboot [--power-cycle] [-y]     Reboot (or power-cycle) the server (guarded)
+      daemon-create --name NAME --command CMD [--user forge|root] [--directory DIR]
+                    [--processes N] [--site SITE] [--startsecs N] [--stopwaitsecs N]
+                    [--stopsignal SIG]
+                                      Add a background process (user forge, 1 process)
+      daemon-delete DAEMON_ID [-y]    Remove a background process (guarded)
+      daemon-restart DAEMON_ID        Restart a background process
+      job-create --command CMD --frequency F [--cron EXPR] [--name NAME] [--user USER]
+                 [--heartbeat] [--site SITE]
+                                      Schedule a job. F: minutely, hourly, nightly, weekly,
+                                      monthly, reboot, custom; --cron is required with custom
+                                      and only allowed with it. User default forge
+      job-delete JOB [--site SITE] [-y]
+                                      Remove a scheduled job by name or id (guarded)
+
+    Guarded writes ask you to type the resource's name (the site, server, rule,
+    or job name; a daemon's id) on a TTY; pass -y/--yes to confirm
+    non-interactively (required with --stdin). A write that changes nothing
+    prints "no change" and sends nothing.
 
     SERVER defaults to FORGE_SERVER, else the org's only server.
     SITE is a site name (its domain) or id; site commands find its server

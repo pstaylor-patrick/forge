@@ -80,6 +80,27 @@ module ForgeCli
     # The page a site-scoped write opens afterwards.
     def self.site_affected(org, ref) = Affected.new(org: org, server_id: ref[:server_id], site_id: ref[:site_id])
 
+    # The page a server-scoped write opens afterwards.
+    def self.server_affected(org, server_id) = Affected.new(org: org, server_id: server_id)
+
+    # The server a server-scoped write targets, as {id:, name:, ...}, and the
+    # site ref when --site is given. With --site, the site's own server is
+    # used (-S only narrows the site lookup).
+    def self.server_and_site(ctx, opts)
+      return [ctx.server(opts[:server]), nil] unless opts[:site]
+
+      ref = ctx.site(opts[:site], server_query: opts[:server])
+      server = ctx.server(ref[:server_id].to_s)
+      [server, ref]
+    end
+
+    # Fails unless value is one of allowed; flag names the option for the message.
+    def self.one_of!(value, allowed, flag:)
+      return value if allowed.include?(value)
+
+      raise Error, "#{flag} must be one of #{allowed.join(', ')}, got '#{value}'"
+    end
+
     # Guard prompt for a write that overwrites something on a site; the user
     # types the site name.
     def self.site_confirm(action, ref)

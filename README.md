@@ -2,7 +2,7 @@
 
 A small command-line client for the [Laravel Forge](https://forge.laravel.com) organization-scoped API. Ruby standard library only: no Gemfile, no gems at runtime.
 
-Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and the first writes: deploying, editing a site's `.env`, and replacing its deploy script. Every write can be previewed with `-d`.
+Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and writes: deploying, editing a site's `.env`, replacing its deploy script, firewall rules, service actions, server reboots, background processes (daemons), and scheduled jobs. Every write can be previewed with `-d`.
 
 ## Setup
 
@@ -88,12 +88,31 @@ Every write takes `-d/--dry-run`, which prints the method, path, and body and se
 | `deploy SITE [-w\|--wait] [--timeout SEC]` | Queues a deployment. `--wait` polls every 5 seconds, printing each status change to stderr, until it finishes; a `failed`, `failed-build`, or `cancelled` deployment, or the timeout (default 900 seconds), exits 1 with the `forge deploy-log SITE ID` command to run | no |
 | `env-set SITE MODE [--cache] [--queues] [--reveal]` | Replaces the site's `.env`. `MODE` is exactly one of `--file PATH`, `--stdin`, or one or more `--set KEY=VALUE` / `--unset KEY` (applied in order to the current file). Prints the added, removed, and changed key names to stderr, never values. The dry-run body shows the file masked unless `--reveal` | yes |
 | `deploy-script-set SITE (--file PATH \| --stdin) [--[no-]auto-source]` | Replaces the deploy script. Prints `N lines -> M lines` to stderr | yes |
+| `firewall-create --name NAME [--port PORT] [--ip ADDR] [--type allow\|deny]` | Adds a firewall rule (type default `allow`; name at most 50 characters). Without `--ip` the rule applies to any address | no |
+| `firewall-delete RULE` | Removes a firewall rule by name or id | yes (rule name) |
+| `service SERVICE ACTION [--php-version phpNN]` | Runs a service action, checked against the table below before anything is sent. For `php`, the version defaults to the server's `php_version` | `stop` only (server name) |
+| `reboot [--power-cycle]` | Reboots the server, or power-cycles it at the provider | yes (server name) |
+| `daemon-create --name NAME --command CMD [--user forge\|root] [--directory DIR] [--processes N] [--site SITE] [--startsecs N] [--stopwaitsecs N] [--stopsignal SIG]` | Adds a background process (user default `forge`, 1 process). `--site` associates it with a site | no |
+| `daemon-delete DAEMON_ID` | Removes a background process | yes (its id) |
+| `daemon-restart DAEMON_ID` | Restarts a background process | no |
+| `job-create --command CMD --frequency F [--cron EXPR] [--name NAME] [--user USER] [--heartbeat] [--site SITE]` | Schedules a job on the server, or on a site with `--site`. `F` is `minutely`, `hourly`, `nightly`, `weekly`, `monthly`, `reboot`, or `custom`; `--cron` is required with `custom` and rejected otherwise. User default `forge` | no |
+| `job-delete JOB [--site SITE]` | Removes a scheduled job by name or id | yes (job name, else its id) |
+
+The server writes take `-S SERVER`. Service actions:
+
+| Service | Actions |
+|---------|---------|
+| `nginx`, `mysql`, `postgres` | `restart`, `reboot`, `stop` |
+| `redis`, `supervisor` | `restart`, `reboot` |
+| `php` | `restart`, `reboot`, `reload` |
+
+`restart` is an alias sent as `reboot`, which is what the API calls a restart.
 
 A write that would change nothing (same content, ignoring trailing newlines) prints `no change`, sends nothing, and exits 0. So `forge deploy-script SITE > script.sh`, an edit, then `forge deploy-script-set SITE --file script.sh -d` previews exactly that edit.
 
-Guarded writes overwrite content Forge cannot give back. On a terminal they say what will happen and ask you to type the site name; anything else aborts (exit 1) with nothing sent. Without a terminal (scripts, agents) they refuse (exit 1) unless you pass `-y/--yes`. `--stdin` consumes stdin, so it always needs `--yes` (or `-d`). No environment variable skips the guard.
+Guarded writes destroy or overwrite something Forge cannot give back, or take a server or service down without bringing it back. On a terminal they say what will happen and ask you to type the resource's name (shown in the table above); anything else aborts (exit 1) with nothing sent. Without a terminal (scripts, agents) they refuse (exit 1) unless you pass `-y/--yes`. `--stdin` consumes stdin, so it always needs `--yes` (or `-d`). No environment variable skips the guard.
 
-After a successful write, the CLI opens the affected site's Forge page in your browser, so no change is silent. Set `FORGE_NO_BROWSER=1` to turn that off. Dry runs and no-ops never open anything.
+After a successful write, the CLI opens the affected site's (or, for server writes, the server's) Forge page in your browser, so no change is silent. Set `FORGE_NO_BROWSER=1` to turn that off. Dry runs and no-ops never open anything.
 
 `SERVER` defaults to `FORGE_SERVER`, else the org's only server. If the org has several servers and none is selected, the command fails and lists their names.
 
@@ -144,6 +163,11 @@ bin/forge deploy example.com --wait
 bin/forge env-set example.com --set APP_DEBUG=false --unset OLD_FLAG -d
 bin/forge deploy-script example.com > script.sh   # edit script.sh, then:
 bin/forge deploy-script-set example.com --file script.sh -d
+bin/forge firewall-create --name office --port 22 --ip 203.0.113.7 -d
+bin/forge service php restart -d
+bin/forge daemon-create --name queue --command 'php artisan queue:work' --site example.com -d
+bin/forge job-create --command 'php artisan schedule:run' --frequency minutely --site example.com -d
+bin/forge job-delete scheduler -d
 ```
 
 ### Environment
