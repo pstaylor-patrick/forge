@@ -1,0 +1,139 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# realpath, not __dir__: the CLI runs through a ~/.local/bin/forge symlink.
+ROOT = File.expand_path("..", File.dirname(File.realpath(__FILE__)))
+$LOAD_PATH.unshift File.join(ROOT, "lib")
+
+# Load the repo .env (a symlink to the secrets store) without overriding
+# anything already exported. The store's FORGE_API_KEY is used as-is.
+env_file = File.join(ROOT, ".env")
+if File.file?(env_file)
+  File.foreach(env_file) do |line|
+    next if line.strip.empty? || line.lstrip.start_with?("#")
+
+    key, value = line.chomp.split("=", 2)
+    next unless value
+
+    ENV[key.sub(/\Aexport\s+/, "").strip] ||= value.strip.delete_prefix('"').delete_suffix('"')
+  end
+end
+
+require "forge_cli/client"
+require "forge_cli/context"
+require "forge_cli/error"
+require "forge_cli/formatter"
+require "forge_cli/version"
+
+COMMANDS = %w[
+  me orgs servers server
+].freeze
+
+# Commands that change Forge. Empty until the write path lands.
+WRITE_COMMANDS = %w[].freeze
+
+def usage(status = 1)
+  puts <<~USAGE
+    Usage: forge [-j|--json] [--org SLUG] <command> [args] [options]
+
+    Global flags:
+      -j, --json     JSON envelope output: {"ok": true, "command": ..., "data": ...}
+      --org SLUG     Organization (default: FORGE_ORG, else the token's only org)
+      --version      Print the version
+      -h, --help     This help
+
+    Account:
+      me                              The user that owns FORGE_API_KEY
+      orgs                            Organizations the token can see
+
+    Servers:
+      servers                         Every server in the org
+      server [SERVER]                 One server's details (name or id; -S also works)
+
+    SERVER defaults to FORGE_SERVER, else the org's only server.
+
+    Environment:
+      FORGE_API_KEY   API token (loaded from the repo .env symlink)
+      FORGE_ORG       Default organization slug
+      FORGE_SERVER    Default server name or id
+      FORGE_DEBUG     Set to 1 for backtraces on errors (never prints the token)
+      NO_COLOR        Disable color in human output
+
+    Exit codes: 0 ok, 1 error, 2 auth, 3 not found, 4 API error.
+  USAGE
+  exit status
+end
+
+# Strip global flags before dispatch so per-command OptionParser never sees them.
+# Arguments after a literal "--" are left alone.
+def extract_globals(argv)
+  cut = argv.index("--") || argv.size
+  head = argv[0...cut]
+  tail = argv[cut..]
+  globals = { json: false, org: nil }
+
+  rest = []
+  until head.empty?
+    arg = head.shift
+    case arg
+    when "-j", "--json" then globals[:json] = true
+    when "--org"
+      value = head.shift
+      abort "Error: --org needs a value" if value.nil? || value.start_with?("-")
+      globals[:org] = value
+    when /\A--org=(.*)\z/ then globals[:org] = Regexp.last_match(1)
+    else rest << arg
+    end
+  end
+  [globals, rest + tail]
+end
+
+globals, argv = extract_globals(ARGV.dup)
+ARGV.clear
+cmd = argv.shift
+
+if cmd == "--version"
+  puts "forge #{ForgeCli::VERSION}"
+  exit 0
+end
+usage if cmd.nil? || cmd == "-h" || cmd == "--help"
+unless COMMANDS.include?(cmd)
+  $stderr.puts "Unknown command: #{cmd}"
+  usage
+end
+
+formatter = globals[:json] ? ForgeCli::JsonFormatter : ForgeCli::Formatter
+
+def report(label, error)
+  $stderr.puts "#{label}#{error.message}"
+  $stderr.puts error.backtrace.first(5).join("\n") if ENV["FORGE_DEBUG"] == "1" && error.backtrace
+end
+
+begin
+  require "forge_cli/commands/#{cmd.tr('-', '_')}"
+  klass = ForgeCli::Commands.const_get(cmd.split(/[-_]/).map(&:capitalize).join)
+  client = ForgeCli::Client.new
+  ctx = ForgeCli::Context.new(client: client, formatter: formatter, org: globals[:org])
+  klass.run(argv, ctx: ctx, formatter: formatter)
+rescue ForgeCli::AuthError => e
+  report("Auth error: ", e)
+  exit 2
+rescue ForgeCli::NotFoundError => e
+  report("Not found: ", e)
+  exit 3
+rescue ForgeCli::ApiError => e
+  report("API error #{e.status}: ", e)
+  $stderr.puts e.body if e.body && !e.body.to_s.strip.empty?
+  exit 4
+rescue ForgeCli::PartialFailure => e
+  report("Partial failure: ", e)
+  exit 5
+rescue Errno::EPIPE
+  exit 0
+rescue Interrupt
+  $stderr.puts
+  exit 130
+rescue StandardError => e
+  report("Error: ", e)
+  exit 1
+end

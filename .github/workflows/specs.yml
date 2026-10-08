@@ -1,0 +1,21 @@
+name: specs
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  specs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1
+        with:
+          ruby-version: "4.0"
+      - run: gem install minitest --conservative
+      - name: Run specs
+        run: for f in spec/*_spec.rb; do ruby -Ilib "$f" || exit 1; done
