@@ -32,7 +32,10 @@ describe "write commands" do
                                                           attributes: { command: "php artisan queue:work" } }],
                    "#{SERVER}/scheduled-jobs" => [{ id: "40", type: "scheduledJobs", attributes: { name: "scheduler", command: "php artisan schedule:run" } },
                                                   { id: "41", type: "scheduledJobs", attributes: { name: nil, command: "php artisan backup" } }],
-                   "#{SITE}/scheduled-jobs" => [{ id: "50", type: "scheduledJobs", attributes: { name: "site-job", command: "php artisan inspire" } }] },
+                   "#{SITE}/scheduled-jobs" => [{ id: "50", type: "scheduledJobs", attributes: { name: "site-job", command: "php artisan inspire" } }],
+                   "#{SERVER}/database/schemas" => [{ id: "60", type: "databases", attributes: { name: "app" } },
+                                                    { id: "61", type: "databases", attributes: { name: "reports" } }],
+                   "#{SERVER}/database/users" => [{ id: "70", type: "databaseUsers", attributes: { name: "app_user" } }] },
       fetch: { "#{SITE}/environment" => { data: { attributes: { content: SECRET_ENV } } },
                "#{SITE}/deployments/script" => { data: { attributes: { content: SCRIPT, auto_source: false } } },
                "#{SITE}/deployments/99" => lambda { |_|
@@ -79,7 +82,12 @@ describe "write commands" do
     "daemon-restart" => [%w[30 -d], "POST", "#{SERVER}/background-processes/30/actions"],
     "job-create" => [["--command", "php artisan schedule:run", "--frequency", "minutely", "-d"], "POST",
                      "#{SERVER}/scheduled-jobs"],
-    "job-delete" => [%w[scheduler -d], "DELETE", "#{SERVER}/scheduled-jobs/40"]
+    "job-delete" => [%w[scheduler -d], "DELETE", "#{SERVER}/scheduled-jobs/40"],
+    "db-create" => [%w[probe_db -d], "POST", "#{SERVER}/database/schemas"],
+    "db-delete" => [%w[app -d], "DELETE", "#{SERVER}/database/schemas/60"],
+    "db-user-create" => [%w[probe_user --password-stdin -d], "POST", "#{SERVER}/database/users"],
+    "db-user-update" => [%w[app_user --databases app -d], "PUT", "#{SERVER}/database/users/70"],
+    "db-user-delete" => [%w[app_user -d], "DELETE", "#{SERVER}/database/users/70"]
   }.freeze
 
   describe "-d/--dry-run" do
@@ -123,7 +131,9 @@ describe "write commands" do
       "service" => [%w[mysql stop], "POST", "#{SERVER}/services/mysql/actions", "web-1", SERVER_AFFECTED],
       "reboot" => [[], "POST", "#{SERVER}/actions", "web-1", SERVER_AFFECTED],
       "daemon-delete" => [["30"], "DELETE", "#{SERVER}/background-processes/30", "30", SERVER_AFFECTED],
-      "job-delete" => [["scheduler"], "DELETE", "#{SERVER}/scheduled-jobs/40", "scheduler", SERVER_AFFECTED]
+      "job-delete" => [["scheduler"], "DELETE", "#{SERVER}/scheduled-jobs/40", "scheduler", SERVER_AFFECTED],
+      "db-delete" => [["app"], "DELETE", "#{SERVER}/database/schemas/60", "app", SERVER_AFFECTED],
+      "db-user-delete" => [["app_user"], "DELETE", "#{SERVER}/database/users/70", "app_user", SERVER_AFFECTED]
     }.freeze
 
     GUARDED.each do |name, (argv, method, path, token, affected)|
@@ -378,6 +388,7 @@ describe "write commands" do
     end
 
     it "accepts every action in the table for every service" do
+      require "forge_cli/commands/service" # this test may run before any run_write loads it
       ForgeCli::Commands::Service.actions.each do |service, actions|
         actions.each do |action|
           run = run_write("service", [service, action, "--yes"])
@@ -504,6 +515,215 @@ describe "write commands" do
       run = run_write("job-delete", ["site-job", "--site", "example.com", "--yes"])
       assert_equal [["DELETE", "#{SITE}/scheduled-jobs/50", nil]], sent(run)
       assert_equal SITE_AFFECTED, run[:result]
+    end
+  end
+
+  # -- database writes ----------------------------------------------------------
+
+  PASSWORD = "not-a-real-password"
+
+  # A prompt double for the no-echo terminal prompt: records each label and
+  # answers with the given password.
+  def prompt(answer = PASSWORD)
+    labels = []
+    fn = lambda { |label|
+      labels << label
+      answer
+    }
+    [fn, labels]
+  end
+
+  def refute_leaks(run, secret = PASSWORD)
+    refute_includes run[:out], secret
+    refute_includes run[:err], secret
+  end
+
+  # Usage errors that must not echo the would-be password.
+  def assert_argv_password_rejected(name, argv)
+    fake = client
+    error = assert_raises(ForgeCli::Error) { run_write(name, argv, fake: fake) }
+    refute_includes error.message, "s3cret"
+    assert_empty fake.calls
+    assert_empty fake.performed
+  end
+
+  describe "db-create" do
+    it "creates a database by name alone, unguarded" do
+      run = run_write("db-create", ["probe_db"])
+      assert_equal [["POST", "#{SERVER}/database/schemas", { name: "probe_db" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "sends --user with the password from --password-stdin" do
+      run = run_write("db-create", %w[probe_db --user probe_user --password-stdin], stdin: StringIO.new("#{PASSWORD}\n"))
+      assert_equal({ name: "probe_db", user: "probe_user", password: PASSWORD }, run[:client].performed.first.body)
+      assert_includes run[:out], "with user probe_user"
+    end
+
+    it "prompts without echo on a terminal for the --user password" do
+      fn, labels = prompt
+      run = run_write("db-create", %w[probe_db --user probe_user], stdin: TtyInput.new(""), prompt: fn)
+      assert_equal ["Password for probe_user: "], labels
+      assert_equal PASSWORD, run[:client].performed.first.body[:password]
+    end
+
+    it "masks the password in the dry run, human and JSON" do
+      run = run_write("db-create", %w[probe_db --user probe_user --password-stdin -d], stdin: StringIO.new("#{PASSWORD}\n"))
+      assert_includes run[:out], "\"password\": \"********\""
+      refute_leaks(run)
+      run = run_write("db-create", %w[probe_db --user probe_user --password-stdin -d],
+                      stdin: StringIO.new("#{PASSWORD}\n"), json: true)
+      assert_equal "********", JSON.parse(run[:out]).dig("data", "request", "body", "password")
+      refute_leaks(run)
+    end
+
+    it "rejects a --user password it cannot read, a stray --password-stdin, and a long name before any request" do
+      assert_rejected("db-create", %w[probe_db --user probe_user], "a password is required")
+      assert_rejected("db-create", %w[probe_db --password-stdin], "--password-stdin only applies with --user")
+      assert_rejected("db-create", ["x" * 64], "at most 63")
+    end
+
+    it "never takes a password as an argument, and never echoes one" do
+      assert_argv_password_rejected("db-create", %w[probe_db --user u --password s3cret])
+      assert_argv_password_rejected("db-create", %w[probe_db --user u --password=s3cret])
+      assert_argv_password_rejected("db-create", %w[probe_db s3cret])
+    end
+  end
+
+  describe "db-delete" do
+    it "names the database and server in the prompt and resolves an id" do
+      run = run_write("db-delete", ["61"], stdin: TtyInput.new("reports\n"))
+      assert_includes run[:err], "drop database 61 (reports) and all its data on server web-1"
+      assert_equal [["DELETE", "#{SERVER}/database/schemas/61", nil]], sent(run)
+    end
+
+    it "fails with NotFoundError for an unknown database and sends nothing" do
+      fake = client
+      assert_raises(ForgeCli::NotFoundError) { run_write("db-delete", ["nope", "--yes"], fake: fake) }
+      assert_empty fake.performed
+    end
+  end
+
+  describe "db-user-create" do
+    it "resolves --databases names and ids to ids and sends read_only, unguarded" do
+      run = run_write("db-user-create", %w[probe_user --databases app,61 --read-only --password-stdin],
+                      stdin: StringIO.new("#{PASSWORD}\n"))
+      assert_equal [["POST", "#{SERVER}/database/users",
+                     { name: "probe_user", password: PASSWORD, database_ids: [60, 61], read_only: true }]], sent(run)
+      assert_includes run[:out], "(databases: app, reports)"
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "keeps a password's spaces and drops only the line ending" do
+      run = run_write("db-user-create", %w[probe_user --password-stdin], stdin: StringIO.new("two words \r\nignored\n"))
+      assert_equal({ name: "probe_user", password: "two words " }, run[:client].performed.first.body)
+    end
+
+    it "prompts without echo on a terminal when --password-stdin is not given" do
+      fn, labels = prompt
+      run = run_write("db-user-create", ["probe_user"], stdin: TtyInput.new(""), prompt: fn)
+      assert_equal ["Password for probe_user: "], labels
+      assert_equal PASSWORD, run[:client].performed.first.body[:password]
+      refute_leaks(run)
+    end
+
+    it "never prompts on a dry run, and masks the password" do
+      fn, labels = prompt
+      run = run_write("db-user-create", %w[probe_user -d], stdin: TtyInput.new(""), prompt: fn)
+      assert_empty labels
+      assert_includes run[:out], "\"password\": \"********\""
+    end
+
+    it "masks a piped password in the dry run, human and JSON" do
+      run = run_write("db-user-create", %w[probe_user --password-stdin -d], stdin: StringIO.new("#{PASSWORD}\n"))
+      assert_includes run[:out], "\"password\": \"********\""
+      refute_leaks(run)
+      run = run_write("db-user-create", %w[probe_user --password-stdin -d], stdin: StringIO.new("#{PASSWORD}\n"), json: true)
+      body = JSON.parse(run[:out]).dig("data", "request", "body")
+      assert_equal({ "name" => "probe_user", "password" => "********" }, body)
+      refute_leaks(run)
+    end
+
+    it "requires a password it can read, and a non-empty one, before any request" do
+      assert_rejected("db-user-create", ["probe_user"], "a password is required")
+      fake = client
+      error = assert_raises(ForgeCli::Error) do
+        run_write("db-user-create", %w[probe_user --password-stdin], stdin: StringIO.new("\n"), fake: fake)
+      end
+      assert_includes error.message, "empty"
+      error = assert_raises(ForgeCli::Error) do
+        run_write("db-user-create", %w[probe_user --password-stdin], stdin: StringIO.new("#{'x' * 256}\n"), fake: fake)
+      end
+      assert_includes error.message, "longer than 255"
+      assert_empty fake.calls
+    end
+
+    it "fails with NotFoundError for an unknown database and sends nothing" do
+      fake = client
+      assert_raises(ForgeCli::NotFoundError) do
+        run_write("db-user-create", %w[probe_user --databases app,nope --password-stdin],
+                  stdin: StringIO.new("#{PASSWORD}\n"), fake: fake)
+      end
+      assert_empty fake.performed
+    end
+
+    it "never takes a password as an argument, and never echoes one" do
+      assert_argv_password_rejected("db-user-create", %w[probe_user --password s3cret])
+      assert_argv_password_rejected("db-user-create", %w[probe_user --password=s3cret])
+      assert_argv_password_rejected("db-user-create", %w[probe_user --password-stdin=s3cret])
+      assert_argv_password_rejected("db-user-create", %w[probe_user --pass s3cret])
+      assert_argv_password_rejected("db-user-create", %w[probe_user s3cret])
+    end
+  end
+
+  describe "db-user-update" do
+    it "replaces the grants with --databases and leaves the password alone" do
+      run = run_write("db-user-update", %w[app_user --databases reports])
+      assert_equal [["PUT", "#{SERVER}/database/users/70", { database_ids: [61] }]], sent(run)
+      assert_equal "Updated database user 70 (app_user) on web-1: databases set to reports\n", run[:out]
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "removes every grant with an empty --databases" do
+      run = run_write("db-user-update", ["app_user", "--databases", ""])
+      assert_equal({ database_ids: [] }, run[:client].performed.first.body)
+    end
+
+    it "changes only the password with --password-stdin" do
+      run = run_write("db-user-update", %w[70 --password-stdin], stdin: StringIO.new("#{PASSWORD}\n"))
+      assert_equal [["PUT", "#{SERVER}/database/users/70", { password: PASSWORD }]], sent(run)
+      refute_leaks(run)
+    end
+
+    it "prompts without echo when --password-stdin meets a terminal" do
+      fn, labels = prompt
+      run = run_write("db-user-update", %w[app_user --password-stdin], stdin: TtyInput.new(PASSWORD), prompt: fn)
+      assert_equal ["New password: "], labels
+      assert_equal({ password: PASSWORD }, run[:client].performed.first.body)
+    end
+
+    it "masks the password in the dry run" do
+      run = run_write("db-user-update", %w[app_user --databases app --password-stdin -d], stdin: StringIO.new("#{PASSWORD}\n"))
+      assert_includes run[:out], "\"password\": \"********\""
+      assert_includes run[:out], "\"database_ids\""
+      refute_leaks(run)
+    end
+
+    it "needs --databases or --password-stdin before any request" do
+      assert_rejected("db-user-update", ["app_user"], "give --databases, --password-stdin, or both")
+    end
+
+    it "never takes a password as an argument, and never echoes one" do
+      assert_argv_password_rejected("db-user-update", %w[app_user --password=s3cret])
+      assert_argv_password_rejected("db-user-update", %w[app_user s3cret --databases app])
+    end
+  end
+
+  describe "db-user-delete" do
+    it "names the user and server in the prompt and resolves an id" do
+      run = run_write("db-user-delete", ["70"], stdin: TtyInput.new("app_user\n"))
+      assert_includes run[:err], "delete database user 70 (app_user) on server web-1"
+      assert_equal [["DELETE", "#{SERVER}/database/users/70", nil]], sent(run)
     end
   end
 end

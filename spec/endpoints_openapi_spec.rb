@@ -90,7 +90,19 @@ describe "Endpoints against docs/forge-openapi.json" do
                                                              frequency: "custom", name: "scheduler", cron: "0 * * * *", heartbeat: false)
                       }],
     delete_server_job: [-> { EP.delete_server_job("my-org", 10, 30) }],
-    delete_site_job: [-> { EP.delete_site_job("my-org", 10, 20, 30) }]
+    delete_site_job: [-> { EP.delete_site_job("my-org", 10, 20, 30) }],
+    create_schema: [-> { EP.create_schema("my-org", 10, name: "app") },
+                    -> { EP.create_schema("my-org", 10, name: "app", user: "app_user", password: "placeholder") }],
+    delete_schema: [-> { EP.delete_schema("my-org", 10, 60) }],
+    create_db_user: [-> { EP.create_db_user("my-org", 10, name: "app_user", password: "placeholder") },
+                     lambda {
+                       EP.create_db_user("my-org", 10, name: "app_user", password: "placeholder", database_ids: [60, 61],
+                                                       read_only: true)
+                     }],
+    update_db_user: [-> { EP.update_db_user("my-org", 10, 70, password: "placeholder") },
+                     -> { EP.update_db_user("my-org", 10, 70, database_ids: [60]) },
+                     -> { EP.update_db_user("my-org", 10, 70, password: "placeholder", database_ids: []) }],
+    delete_db_user: [-> { EP.delete_db_user("my-org", 10, 70) }]
   }.freeze
 
   # -- schema helpers ---------------------------------------------------------
@@ -147,6 +159,9 @@ describe "Endpoints against docs/forge-openapi.json" do
       out << "#{where}: #{value.inspect} is not one of #{schema['enum'].join(', ')}"
     end
     out.concat(object_problems(value, schema, where)) if value.is_a?(Hash)
+    if value.is_a?(Array) && schema["items"]
+      value.each_with_index { |item, i| out.concat(problems(item, schema["items"], "#{where}[#{i}]")) }
+    end
     out
   end
 
@@ -265,6 +280,12 @@ describe "Endpoints against docs/forge-openapi.json" do
       assert(found.any? { |p| p.include?("required a is missing") })
       assert(found.any? { |p| p.include?("is not one of x, y") })
       assert_equal ["body.a: integer is not string"], problems({ a: 1 }, schema, "body")
+    end
+
+    it "checks array items, so database ids must be integers" do
+      schema = { "type" => "array", "items" => { "type" => "integer" } }
+      assert_empty problems([60, 61], schema, "ids")
+      assert_equal ["ids[1]: string is not integer"], problems([60, "61"], schema, "ids")
     end
 
     it "prefers a literal path over a parameter" do

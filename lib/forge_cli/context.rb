@@ -60,6 +60,14 @@ module ForgeCli
     def domain(site, query) = pick_child(Endpoints.domains(org, site[:server_id], site[:site_id]), query, "domain")
     def schema(server_id, query) = pick_child(Endpoints.schemas(org, server_id), query, "database")
     def db_user(server_id, query) = pick_child(Endpoints.db_users(org, server_id), query, "database user")
+
+    # Several database schemas by name or id, from a single listing.
+    def schemas_named(server_id, queries)
+      return [] if queries.empty?
+
+      records = client.fetch_all(Endpoints.schemas(org, server_id)).map { |r| Records.flatten(r) }
+      queries.map { |query| Resolver.pick(records, query, kind: "database") }
+    end
     def firewall_rule(server_id, query) = pick_child(Endpoints.firewall_rules(org, server_id), query, "firewall rule")
 
     # A scheduled job by name or id, on the server or (with site) on that site.

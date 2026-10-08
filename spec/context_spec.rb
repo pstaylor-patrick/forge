@@ -191,5 +191,15 @@ describe ForgeCli::Context do
       error = assert_raises(ForgeCli::NotFoundError) { child_context.schema(10, "nope") }
       assert_includes error.message, "no database matches 'nope'"
     end
+
+    it "resolves several databases from one listing, and none without a request" do
+      ctx = child_context
+      assert_equal [3, 3], ctx.schemas_named(10, %w[app_db 3]).map { |r| r[:id] }
+      assert_equal 1, ctx.client.calls.count { |kind, req| kind == :fetch_all && req.path.end_with?("/database/schemas") }
+      fresh = child_context
+      assert_empty fresh.schemas_named(10, [])
+      assert_empty fresh.client.calls
+      assert_raises(ForgeCli::NotFoundError) { child_context.schemas_named(10, %w[app_db nope]) }
+    end
   end
 end

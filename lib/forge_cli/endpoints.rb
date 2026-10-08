@@ -172,6 +172,30 @@ module ForgeCli
       write("DELETE", "#{site_path(org, server, site)}/scheduled-jobs/#{segment(id)}")
     end
 
+    # -- writes: database schemas and users -----------------------------------
+    # The API has no PUT for schemas; "update" applies to database users only.
+
+    # user and password create a user alongside the database (password is
+    # only used when user is given).
+    def create_schema(org, server, name:, user: nil, password: nil)
+      write("POST", "#{server_path(org, server)}/database/schemas", { name: name, user: user, password: password })
+    end
+
+    def delete_schema(org, server, id) = write("DELETE", "#{server_path(org, server)}/database/schemas/#{segment(id)}")
+
+    def create_db_user(org, server, name:, password:, database_ids: nil, read_only: nil)
+      write("POST", "#{server_path(org, server)}/database/users",
+            { name: name, password: password, database_ids: database_ids, read_only: read_only })
+    end
+
+    # database_ids replaces the user's grants; nil leaves them alone.
+    def update_db_user(org, server, id, password: nil, database_ids: nil)
+      write("PUT", "#{server_path(org, server)}/database/users/#{segment(id)}",
+            { password: password, database_ids: database_ids })
+    end
+
+    def delete_db_user(org, server, id) = write("DELETE", "#{server_path(org, server)}/database/users/#{segment(id)}")
+
     # -- helpers ------------------------------------------------------------
 
     def job_body(command:, user:, frequency:, name:, cron:, heartbeat:)

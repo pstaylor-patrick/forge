@@ -97,8 +97,13 @@ Every write takes `-d/--dry-run`, which prints the method, path, and body and se
 | `daemon-restart DAEMON_ID` | Restarts a background process | no |
 | `job-create --command CMD --frequency F [--cron EXPR] [--name NAME] [--user USER] [--heartbeat] [--site SITE]` | Schedules a job on the server, or on a site with `--site`. `F` is `minutely`, `hourly`, `nightly`, `weekly`, `monthly`, `reboot`, or `custom`; `--cron` is required with `custom` and rejected otherwise. User default `forge` | no |
 | `job-delete JOB [--site SITE]` | Removes a scheduled job by name or id | yes (job name, else its id) |
+| `db-create NAME [--user USER] [--password-stdin]` | Creates a database (name at most 63 characters). `--user` also creates a database user for it, whose password is required | no |
+| `db-delete DB` | Drops a database by name or id, with all its data | yes (database name) |
+| `db-user-create NAME [--databases a,b] [--read-only] [--password-stdin]` | Creates a database user (password required) with access to the listed databases (names or ids), read-only with `--read-only` | no |
+| `db-user-update USER [--databases a,b] [--password-stdin]` | Changes a database user. `--databases` **replaces** the user's grants with exactly that list (`--databases ''` removes every grant); `--password-stdin` sets a new password. Give at least one | no |
+| `db-user-delete USER` | Removes a database user by name or id | yes (database user name) |
 
-The server writes take `-S SERVER`. Service actions:
+The server and database writes take `-S SERVER`. Service actions:
 
 | Service | Actions |
 |---------|---------|
@@ -107,6 +112,8 @@ The server writes take `-S SERVER`. Service actions:
 | `php` | `restart`, `reboot`, `reload` |
 
 `restart` is an alias sent as `reboot`, which is what the API calls a restart.
+
+Database passwords are never command-line arguments, where they would land in shell history and process listings. Pipe the password as one line to `--password-stdin` (only the line ending is dropped, so spaces are kept), or leave the flag off on a terminal to be prompted without echo (`db-user-update` prompts when `--password-stdin` meets a terminal). Anything that looks like a password argument (`--password`, `--password=...`) is refused without being echoed. Dry runs never prompt, and print the password as `********`.
 
 A write that would change nothing (same content, ignoring trailing newlines) prints `no change`, sends nothing, and exits 0. So `forge deploy-script SITE > script.sh`, an edit, then `forge deploy-script-set SITE --file script.sh -d` previews exactly that edit.
 
@@ -168,6 +175,10 @@ bin/forge service php restart -d
 bin/forge daemon-create --name queue --command 'php artisan queue:work' --site example.com -d
 bin/forge job-create --command 'php artisan schedule:run' --frequency minutely --site example.com -d
 bin/forge job-delete scheduler -d
+bin/forge db-create app_db -d
+printf "%s\n" "$DB_PASSWORD" | bin/forge db-user-create app_user --databases app_db --password-stdin -d
+bin/forge db-user-update app_user --databases app_db,reports_db -d
+bin/forge db-delete app_db -d
 ```
 
 ### Environment

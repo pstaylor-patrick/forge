@@ -142,5 +142,18 @@ describe ForgeCli::Endpoints do
       assert_equal({ content: "x", auto_source: false }, E.put_deploy_script("o", 1, 2, content: "x", auto_source: false).body)
       assert_equal "/orgs/o/servers/1/sites/2/deployments/script", E.put_deploy_script("o", 1, 2, content: "x").path
     end
+
+    it "builds the database schema and user writes, dropping unset keys" do
+      assert_equal ["POST", "/orgs/o/servers/1/database/schemas", { name: "app" }],
+                   E.create_schema("o", 1, name: "app").then { |r| [r.method, r.path, r.body] }
+      assert_equal ["DELETE", "/orgs/o/servers/1/database/schemas/60", nil],
+                   E.delete_schema("o", 1, 60).then { |r| [r.method, r.path, r.body] }
+      assert_equal({ name: "u", password: "p", read_only: false },
+                   E.create_db_user("o", 1, name: "u", password: "p", read_only: false).body)
+      assert_equal ["PUT", "/orgs/o/servers/1/database/users/70", { database_ids: [] }],
+                   E.update_db_user("o", 1, 70, database_ids: []).then { |r| [r.method, r.path, r.body] }
+      assert_equal ["DELETE", "/orgs/o/servers/1/database/users/70", nil],
+                   E.delete_db_user("o", 1, 70).then { |r| [r.method, r.path, r.body] }
+    end
   end
 end

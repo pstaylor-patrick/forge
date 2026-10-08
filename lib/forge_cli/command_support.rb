@@ -43,6 +43,20 @@ module ForgeCli
       args.first
     end
 
+    # The single required positional argument, with an error that does not
+    # echo extra arguments (a password typed as one must not reach stderr).
+    def self.one_arg_quiet!(parser, argv, name)
+      args = parse!(parser, argv)
+      raise Error, "missing #{name}\n#{parser.banner}" if args.empty?
+      raise Error, "expected exactly one #{name} argument, got #{args.size}\n#{parser.banner}" if args.size > 1
+
+      args.first
+    end
+
+    # A comma-separated flag value as a list of names: blanks dropped, order
+    # kept, duplicates removed.
+    def self.name_list(value) = value.to_s.split(",").map(&:strip).reject(&:empty?).uniq
+
     # Parses a count flag value within min..max.
     def self.count(value, flag:, min: 1, max: nil)
       text = value.to_s.strip

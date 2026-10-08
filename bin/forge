@@ -34,6 +34,7 @@ COMMANDS = %w[
   deploy env-set deploy-script-set
   firewall-create firewall-delete service reboot
   daemon-create daemon-delete daemon-restart job-create job-delete
+  db-create db-delete db-user-create db-user-update db-user-delete
 ].freeze
 
 # Commands that change Forge. Each returns an Affected (nil on a dry run or
@@ -43,6 +44,7 @@ WRITE_COMMANDS = %w[
   deploy env-set deploy-script-set
   firewall-create firewall-delete service reboot
   daemon-create daemon-delete daemon-restart job-create job-delete
+  db-create db-delete db-user-create db-user-update db-user-delete
 ].freeze
 
 def usage(status = 1)
@@ -126,9 +128,22 @@ def usage(status = 1)
       job-delete JOB [--site SITE] [-y]
                                       Remove a scheduled job by name or id (guarded)
 
+    Database writes (all take -S SERVER):
+      db-create NAME [--user USER] [--password-stdin]
+                                      Create a database; --user also creates a user for it
+      db-delete DB [-y]               Drop a database by name or id (guarded)
+      db-user-create NAME [--databases a,b] [--read-only] [--password-stdin]
+                                      Create a database user with access to those databases
+      db-user-update USER [--databases a,b] [--password-stdin]
+                                      Change a user's password and/or grants; --databases
+                                      REPLACES the grants with exactly that list
+      db-user-delete USER [-y]        Remove a database user by name or id (guarded)
+      Passwords are never arguments: pipe one line to --password-stdin, or run on
+      a terminal to be prompted without echo. Dry runs print the password masked.
+
     Guarded writes ask you to type the resource's name (the site, server, rule,
-    or job name; a daemon's id) on a TTY; pass -y/--yes to confirm
-    non-interactively (required with --stdin). A write that changes nothing
+    job, database, or database user name; a daemon's id) on a TTY; pass -y/--yes
+    to confirm non-interactively (required with --stdin). A write that changes nothing
     prints "no change" and sends nothing.
 
     SERVER defaults to FORGE_SERVER, else the org's only server.
