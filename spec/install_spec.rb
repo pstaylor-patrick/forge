@@ -1,13 +1,14 @@
 # frozen_string_literal: true
 
 require_relative "spec_helper"
+require "fileutils"
 require "json"
 require "stringio"
 require "tmpdir"
 require_relative "../install"
 
 describe Install::Installer do
-  REPO = File.realpath(File.expand_path("..", __dir__))
+  def repo = File.realpath(File.expand_path("..", __dir__))
 
   before do
     @home = Dir.mktmpdir("forge-install-home")
@@ -17,7 +18,7 @@ describe Install::Installer do
   after { FileUtils.rm_rf(@home) }
 
   def install!
-    Install::Installer.new(repo: REPO, home: @home, out: @out).run
+    Install::Installer.new(repo: repo, home: @home, out: @out).run
   end
 
   def path(*parts) = File.join(@home, *parts)
@@ -27,11 +28,11 @@ describe Install::Installer do
     install!
 
     assert File.symlink?(bin_link)
-    assert_equal File.join(REPO, "bin", "forge"), File.readlink(bin_link)
+    assert_equal File.join(repo, "bin", "forge"), File.readlink(bin_link)
 
     claude = path(".claude", "skills", "forge")
     assert File.symlink?(claude)
-    assert_equal File.join(REPO, "skills", "forge"), File.readlink(claude)
+    assert_equal File.join(repo, "skills", "forge"), File.readlink(claude)
 
     pi = JSON.parse(File.read(path(".pi", "agent", "settings.json")))
     assert_equal [path(".claude", "skills")], pi["skills"]
@@ -50,7 +51,7 @@ describe Install::Installer do
     pi_before = File.read(path(".pi", "agent", "settings.json"))
     install!
 
-    assert_equal File.join(REPO, "bin", "forge"), File.readlink(bin_link)
+    assert_equal File.join(repo, "bin", "forge"), File.readlink(bin_link)
     assert_equal pi_before, File.read(path(".pi", "agent", "settings.json"))
     config = JSON.parse(File.read(path(".config", "opencode", "opencode.jsonc")))
     assert_equal 1, config.dig("skills", "paths").size
@@ -58,9 +59,9 @@ describe Install::Installer do
 
   it "refreshes a stale link that points elsewhere inside this repo" do
     FileUtils.mkdir_p(File.dirname(bin_link))
-    File.symlink(File.join(REPO, "bin", "old-forge"), bin_link)
+    File.symlink(File.join(repo, "bin", "old-forge"), bin_link)
     install!
-    assert_equal File.join(REPO, "bin", "forge"), File.readlink(bin_link)
+    assert_equal File.join(repo, "bin", "forge"), File.readlink(bin_link)
   end
 
   it "refuses to replace a symlink to another forge, touching nothing" do

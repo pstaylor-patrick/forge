@@ -104,6 +104,7 @@ module Install
       return if roots.include?(claude_skills_root)
 
       data["skills"] = roots + [claude_skills_root]
+      warn_if_comments(pi_settings)
       write_json(pi_settings, data)
     end
 
@@ -125,7 +126,9 @@ module Install
 
     def register_opencode_path
       data = load_json(opencode_config)
-      skills = data["skills"].is_a?(Hash) ? data["skills"] : {}
+      skills = data["skills"] || {}
+      raise Refused, "#{opencode_config}: \"skills\" is not an object; fix it, then re-run" unless skills.is_a?(Hash)
+
       paths = Array(skills["paths"])
       return if paths.include?(opencode_skills_root)
 
@@ -138,8 +141,8 @@ module Install
     # write_json reserializes as plain JSON, so any comments in a .jsonc file are
     # dropped. Announce that before it happens (the .bak still has the original)
     # rather than letting the loss be silent. Detect comments by what strip_jsonc
-    # removes, not by a parse failure: JSON.parse tolerates comments on some Ruby
-    # versions, so a failed parse is not a reliable signal.
+    # removes, not by a parse failure: newer json gems accept comments, so a
+    # successful parse does not mean the file had none.
     def warn_if_comments(path)
       return unless File.exist?(path)
 

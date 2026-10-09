@@ -107,6 +107,6 @@ not cover, say so instead of reaching for curl.
 | 3 | Not found: HTTP 404 or a name that matches nothing (the message lists what exists) |
 | 4 | API error: other non-2xx, including 422 validation and 429 after one retry |
 
-The API allows 60 requests per minute; each command costs a few (set
-`FORGE_ORG` to skip the org lookup). Prefer one listing with `-j` over many
+The API allows 60 requests per minute; a site-scoped command makes 2 to 3
+requests, one of them the org lookup that setting `FORGE_ORG` skips. Prefer one listing with `-j` over many
 single-item reads.
