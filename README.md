@@ -16,7 +16,7 @@ There is deliberately no generic API passthrough: every command maps to one type
    ```
 
 2. Create a Forge API token in your Forge account settings.
-3. Put it in a dotenv file that lives outside the repo (your own secrets store), as `FORGE_API_KEY=...`.
+3. Put it in a dotenv file that lives outside the repo (your own secrets store), on a line that sets `FORGE_API_KEY` to the token.
 4. Symlink that file into the repo root as `.env`:
 
    ```bash
