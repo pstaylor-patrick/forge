@@ -140,8 +140,9 @@ def usage(status = 1)
                                       Change a user's password and/or grants; --databases
                                       REPLACES the grants with exactly that list
       db-user-delete USER [-y]        Remove a database user by name or id (guarded)
-      Passwords are never arguments: pipe one line to --password-stdin, or run on
-      a terminal to be prompted without echo. Dry runs print the password masked.
+      Passwords are never arguments: pipe one line to --password-stdin.
+      On a terminal, leave the flag off to be prompted without echo.
+      Dry runs print the password masked.
 
     Site writes:
       site-create DOMAIN [-S SERVER] [--type T] [--php phpNN] [--web-dir DIR]

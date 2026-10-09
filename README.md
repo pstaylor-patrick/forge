@@ -2,11 +2,19 @@
 
 A small command-line client for the [Laravel Forge](https://forge.laravel.com) organization-scoped API. Ruby standard library only: no Gemfile, no gems at runtime.
 
-Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and writes: deploying, editing a site's `.env`, replacing its deploy script, firewall rules, service actions, server reboots, background processes (daemons), and scheduled jobs. Every write can be previewed with `-d`.
+Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and writes: deploying, editing a site's `.env`, replacing its deploy script, firewall rules, service actions, server reboots, background processes (daemons), scheduled jobs, databases and database users, sites, domains, and Let's Encrypt certificates. Every write can be previewed with `-d`, destructive writes ask you to type the resource's name, and `.env` values are masked unless you ask for them.
+
+There is deliberately no generic API passthrough: every command maps to one typed endpoint.
 
 ## Setup
 
-1. Clone the repo.
+1. Clone the repo:
+
+   ```bash
+   git clone https://github.com/pstaylor-patrick/forge.git
+   cd forge
+   ```
+
 2. Create a Forge API token in your Forge account settings.
 3. Put it in a dotenv file that lives outside the repo (your own secrets store), as `FORGE_API_KEY=...`.
 4. Symlink that file into the repo root as `.env`:
@@ -17,9 +25,30 @@ Commands cover reads (the account, orgs, servers, sites, deployments, env, logs,
 
    `.env` is gitignored. `bin/forge` loads it on every run without overriding anything you already exported.
 
-5. Run `bin/forge me` to check the token.
+5. Install the binary and the agent skill:
+
+   ```bash
+   ruby install.rb
+   ```
+
+6. Run `forge me` to check the token.
 
 Requires Ruby 4.0 or newer.
+
+### What install.rb does
+
+`install.rb` is idempotent; re-run it after pulling. It:
+
+| Target | Action |
+|--------|--------|
+| `~/.local/bin/forge` | Symlink to `bin/forge`, so `forge` works from any directory (`bin/forge` finds the repo through the link). Creates `~/.local/bin` if needed. It only replaces a missing entry or a symlink that already points into this repo; if `~/.local/bin/forge` is a regular file or links anywhere else (for example Laravel's official forge CLI), it stops with `refusing to replace ~/.local/bin/forge (points to X); remove it or install manually` and changes nothing |
+| Claude Code | Symlinks `~/.claude/skills/forge` to `skills/forge`, giving agents the `/forge` skill |
+| Pi | Adds `~/.claude/skills` to the `skills` roots in `~/.pi/agent/settings.json` |
+| OpenCode | Copies the skill to `~/.config/opencode/skills/forge` (OpenCode does not follow symlinks), marks the copy with `.forge-skill-generated`, and lists that directory under `skills.paths` in `~/.config/opencode/opencode.jsonc`. A same-named directory without the marker is left alone |
+
+Config files are backed up to `*.bak` before they are rewritten. Rewriting `opencode.jsonc` drops its comments; the installer says so when that happens. If `~/.local/bin` is not on your `PATH`, the installer prints a note; add it in your shell profile.
+
+`skills/forge/SKILL.md` is the source of truth for the skill: edit it here, then re-run `ruby install.rb` to refresh the OpenCode copy.
 
 ## Usage
 
@@ -161,35 +190,37 @@ Keys such as `nginx`, `php84`, `mysql`, `auth`, and `syslog` return 404.
 ### Examples
 
 ```bash
-bin/forge servers
-bin/forge server web-1
-bin/forge --org my-org -j servers | jq '.data[].attributes.name'
-bin/forge sites
-bin/forge deploys example.com -n 5
-bin/forge deploy-log example.com | tail -20
-bin/forge env example.com
-bin/forge logs example.com --type nginx-error --tail 50
-bin/forge jobs --site example.com
-bin/forge server-log nginx-access -S web-1 --tail 100
-bin/forge -j events -n 5 | jq '.data[].attributes.description'
-bin/forge deploy example.com -d
-bin/forge deploy example.com --wait
-bin/forge env-set example.com --set APP_DEBUG=false --unset OLD_FLAG -d
-bin/forge deploy-script example.com > script.sh   # edit script.sh, then:
-bin/forge deploy-script-set example.com --file script.sh -d
-bin/forge firewall-create --name office --port 22 --ip 203.0.113.7 -d
-bin/forge service php restart -d
-bin/forge daemon-create --name queue --command 'php artisan queue:work' --site example.com -d
-bin/forge job-create --command 'php artisan schedule:run' --frequency minutely --site example.com -d
-bin/forge job-delete scheduler -d
-bin/forge db-create app_db -d
-printf "%s\n" "$DB_PASSWORD" | bin/forge db-user-create app_user --databases app_db --password-stdin -d
-bin/forge db-user-update app_user --databases app_db,reports_db -d
-bin/forge db-delete app_db -d
-bin/forge site-create example.com --php php84 --repo acme/app --branch main -d
-bin/forge site-update example.com --php php84 -d
-bin/forge domain-create example.com www.example.com --www to-www -d
-bin/forge cert-issue example.com www.example.com -d
+forge servers
+forge server web-1
+forge --org my-org -j servers | jq '.data[].attributes.name'
+forge sites
+forge deploys example.com -n 5
+forge deploy-log example.com | tail -20
+forge env example.com
+forge logs example.com --type nginx-error --tail 50
+forge jobs --site example.com
+forge server-log nginx-access -S web-1 --tail 100
+forge -j events -n 5 | jq '.data[].attributes.description'
+forge deploy example.com -d
+forge deploy example.com --wait
+forge env-set example.com --set APP_DEBUG=false --unset OLD_FLAG -d
+forge deploy-script example.com > script.sh   # edit script.sh, then:
+forge deploy-script-set example.com --file script.sh -d
+forge firewall-create --name office --port 22 --ip 203.0.113.7 -d
+forge service php restart -d
+forge daemon-create --name queue --command 'php artisan queue:work' --site example.com -d
+forge job-create --command 'php artisan schedule:run' --frequency minutely --site example.com -d
+forge job-delete scheduler -d
+forge db-create app_db -d
+printf "%s\n" "$DB_PASSWORD" | forge db-user-create app_user --databases app_db --password-stdin -d
+forge db-user-update app_user --databases app_db,reports_db -d
+forge db-delete app_db -d
+forge site-create example.com --php php84 --repo acme/app --branch main -d
+forge site-update example.com --php php84 -d
+forge domain-create example.com www.example.com --www to-www -d
+forge cert-issue example.com www.example.com -d
+forge domain-delete example.com www.example.com      # on a terminal: type www.example.com to confirm
+forge domain-delete example.com www.example.com -y   # non-interactive, after reviewing the -d output
 ```
 
 ### Environment
@@ -222,15 +253,22 @@ bin/forge cert-issue example.com www.example.com -d
 - Each command costs a few requests: the org lookup (skip it by setting `FORGE_ORG`), one listing per name to resolve, then the read itself.
 - Lists use cursor pagination (`page[size]`, `page[cursor]` from `meta.next_cursor`); the CLI follows every page, up to 50.
 - The API allows 60 requests per minute. On a 429 the CLI waits once (when the reset is within 60 seconds) and retries.
-- `docs/forge-openapi.json` is a snapshot of the API spec. Refresh it with:
+- `docs/forge-openapi.json` is a snapshot of the API spec (the URL listed in Forge's `llms.txt` 404s; use this one). Refresh it, then check every request builder against it:
 
   ```bash
   curl -sS -o docs/forge-openapi.json https://forge.laravel.com/api/docs.openapi
+  ruby -Ilib spec/endpoints_openapi_spec.rb
   ```
+
+  The spec checks that each builder's path and method exist in the snapshot, that its body keys are properties of the request schema, that required keys are sent, and that enum values are allowed. Fix any builder it flags.
+
+## Agents
+
+`ruby install.rb` gives Claude Code, Pi, and OpenCode a `/forge` skill (`skills/forge/SKILL.md`) that tells them to use this CLI for every Forge operation, to dry-run each write and show it before running it, to pass `--yes` to a destructive command only after you approve it, and never to reveal or repeat `.env` values. `CLAUDE.md` and `.claude/rules/forge.md` hold the rules for working on this repo.
 
 ## Specs
 
-Minitest, no network:
+Minitest, no network (specs never load `bin/forge`, read `.env`, or open a socket):
 
 ```bash
 for f in spec/*_spec.rb; do ruby -Ilib "$f" || exit 1; done
