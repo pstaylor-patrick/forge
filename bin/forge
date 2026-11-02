@@ -30,9 +30,9 @@ COMMANDS = %w[
   me orgs
   servers server
   sites site deploys deploy-log deploy-status deploy-script env domains certs logs
-  dbs db-users daemons daemon-log jobs job-output firewall events event-output server-log
+  dbs db-users daemons daemon-log jobs job-output firewall ssh-keys events event-output server-log
   deploy env-set deploy-script-set
-  firewall-create firewall-delete service reboot
+  firewall-create firewall-delete ssh-key-create ssh-key-delete service reboot
   daemon-create daemon-delete daemon-restart job-create job-delete
   db-create db-delete db-user-create db-user-update db-user-delete
   site-create site-update site-delete domain-create domain-delete cert-issue cert-delete
@@ -43,7 +43,7 @@ COMMANDS = %w[
 # See lib/forge_cli/browser.rb.
 WRITE_COMMANDS = %w[
   deploy env-set deploy-script-set
-  firewall-create firewall-delete service reboot
+  firewall-create firewall-delete ssh-key-create ssh-key-delete service reboot
   daemon-create daemon-delete daemon-restart job-create job-delete
   db-create db-delete db-user-create db-user-update db-user-delete
   site-create site-update site-delete domain-create domain-delete cert-issue cert-delete
@@ -88,6 +88,7 @@ def usage(status = 1)
       jobs [--site SITE]              Scheduled jobs on the server (or on one site)
       job-output JOB [--site SITE]    A scheduled job's output (JOB is a name or id)
       firewall                        Firewall rules
+      ssh-keys                        SSH keys installed on the server
       events [-n N]                   Recent events, newest first (org-wide unless -S; default 20)
       event-output EVENT_ID           An event's output
       server-log KEY [--tail N]       A server log, e.g. nginx-access, nginx-error, php-8.4,
@@ -109,6 +110,9 @@ def usage(status = 1)
       firewall-create --name NAME [--port PORT] [--ip ADDR] [--type allow|deny]
                                       Add a firewall rule (type default allow)
       firewall-delete RULE [-y]       Remove a firewall rule by name or id (guarded)
+      ssh-key-create --name NAME (--key KEY | --key-file PATH) [--user USER]
+                                      Install a public SSH key for a server user (default forge)
+      ssh-key-delete KEY [-y]         Remove an SSH key by name or id (guarded)
       service SERVICE ACTION [--php-version phpNN] [-y]
                                       Run a service action. SERVICE: nginx, mysql, postgres,
                                       redis, supervisor, php. ACTION: restart (sent as reboot)

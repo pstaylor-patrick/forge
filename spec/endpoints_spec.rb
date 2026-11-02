@@ -83,6 +83,7 @@ describe ForgeCli::Endpoints do
       assert_equal "#{server}/background-processes", E.daemons("my-org", 10).path
       assert_equal "#{server}/background-processes/7/log", E.daemon_log("my-org", 10, 7).path
       assert_equal "#{server}/firewall-rules", E.firewall_rules("my-org", 10).path
+      assert_equal "#{server}/ssh-keys", E.ssh_keys("my-org", 10).path
       assert_equal "#{server}/scheduled-jobs", E.server_jobs("my-org", 10).path
       assert_equal "#{SITE}/scheduled-jobs", E.site_jobs("my-org", 10, 20).path
       assert_equal "#{server}/scheduled-jobs/8/output", E.server_job_output("my-org", 10, 8).path

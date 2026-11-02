@@ -1,6 +1,6 @@
 ---
 name: forge
-description: Use the local forge CLI for Laravel Forge - servers, sites, deploys, env, logs, daemons, scheduled jobs, databases, firewall rules, domains, and certificates. Use whenever the user asks to read or change anything on Laravel Forge.
+description: Use the local forge CLI for Laravel Forge - servers, sites, deploys, env, logs, daemons, scheduled jobs, databases, firewall rules, SSH keys, domains, and certificates. Use whenever the user asks to read or change anything on Laravel Forge.
 ---
 
 # /forge skill
@@ -41,7 +41,7 @@ deploys SITE [-n N] | deploy-log SITE [ID] | deploy-status SITE | deploy-script 
 env SITE [--reveal] | domains SITE | certs SITE
 logs SITE [--type application|nginx-access|nginx-error] [--tail N]
 dbs | db-users | daemons | daemon-log ID | jobs [--site SITE] | job-output JOB [--site SITE]
-firewall | events [-n N] | event-output ID | server-log KEY [--tail N]
+firewall | ssh-keys | events [-n N] | event-output ID | server-log KEY [--tail N]
 ```
 
 Writes (every one takes `-d/--dry-run`; G = guarded, needs a typed name or `--yes`):
@@ -52,6 +52,8 @@ env-set SITE (--file PATH | --stdin | --set K=V ... | --unset K ...)      G
 deploy-script-set SITE (--file PATH | --stdin)                           G
 firewall-create --name N [--port P] [--ip ADDR] [--type allow|deny]
 firewall-delete RULE                                                     G
+ssh-key-create --name N (--key "ssh-ed25519 ..." | --key-file PATH) [--user forge]
+ssh-key-delete KEY                                                       G
 service SERVICE ACTION [--php-version phpNN]                             G for stop
 reboot [--power-cycle]                                                   G
 daemon-create --name N --command CMD [...] | daemon-restart ID

@@ -61,6 +61,7 @@ module ForgeCli
     def daemons(org, server) = get("#{server_path(org, server)}/background-processes")
     def daemon_log(org, server, id) = get("#{server_path(org, server)}/background-processes/#{segment(id)}/log")
     def firewall_rules(org, server) = get("#{server_path(org, server)}/firewall-rules")
+    def ssh_keys(org, server) = get("#{server_path(org, server)}/ssh-keys")
     def server_log(org, server, key) = get("#{server_path(org, server)}/logs/#{segment(key)}")
 
     def server_jobs(org, server) = get("#{server_path(org, server)}/scheduled-jobs")
@@ -106,6 +107,13 @@ module ForgeCli
     def delete_firewall_rule(org, server, id) = write("DELETE", "#{server_path(org, server)}/firewall-rules/#{segment(id)}")
 
     FIREWALL_TYPES = %w[allow deny].freeze
+
+    # user defaults to forge on the API side; the CLI always sends it.
+    def create_ssh_key(org, server, name:, key:, user: nil)
+      write("POST", "#{server_path(org, server)}/ssh-keys", { name: name, key: key, user: user })
+    end
+
+    def delete_ssh_key(org, server, id) = write("DELETE", "#{server_path(org, server)}/ssh-keys/#{segment(id)}")
 
     # The actions the API accepts per service (one endpoint per service).
     SERVICE_ACTIONS = {

@@ -2,7 +2,7 @@
 
 A small command-line client for the [Laravel Forge](https://forge.laravel.com) organization-scoped API. Ruby standard library only: no Gemfile, no gems at runtime.
 
-Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and writes: deploying, editing a site's `.env`, replacing its deploy script, firewall rules, service actions, server reboots, background processes (daemons), scheduled jobs, databases and database users, sites, domains, and Let's Encrypt certificates. Every write can be previewed with `-d`, destructive writes ask you to type the resource's name, and `.env` values are masked unless you ask for them.
+Commands cover reads (the account, orgs, servers, sites, deployments, env, logs, and server resources) and writes: deploying, editing a site's `.env`, replacing its deploy script, firewall rules, SSH keys, service actions, server reboots, background processes (daemons), scheduled jobs, databases and database users, sites, domains, and Let's Encrypt certificates. Every write can be previewed with `-d`, destructive writes ask you to type the resource's name, and `.env` values are masked unless you ask for them.
 
 There is deliberately no generic API passthrough: every command maps to one typed endpoint.
 
@@ -104,6 +104,7 @@ All take `-S SERVER`.
 | `jobs [--site SITE]` | Scheduled jobs on the server, or on one site: id, name, command, user, frequency, cron, next_run_time, status |
 | `job-output JOB [--site SITE]` | A scheduled job's latest output. `JOB` is a job name or id |
 | `firewall` | Firewall rules: id, name, port, type, ip_address, status |
+| `ssh-keys` | SSH keys installed on the server: id, name, user, status, created_at |
 | `events [-n N]` | Recent events, newest first: id, description, ran_as, created_at. Org-wide unless `-S` is given. Default 20, max 100 |
 | `event-output EVENT_ID` | An event's output |
 | `server-log KEY [--tail N]` | The last N lines of a server log (default 200, `0` = all). See the keys below |
@@ -119,6 +120,8 @@ Every write takes `-d/--dry-run`, which prints the method, path, and body and se
 | `deploy-script-set SITE (--file PATH \| --stdin) [--[no-]auto-source]` | Replaces the deploy script. Prints `N lines -> M lines` to stderr | yes |
 | `firewall-create --name NAME [--port PORT] [--ip ADDR] [--type allow\|deny]` | Adds a firewall rule (type default `allow`; name at most 50 characters). Without `--ip` the rule applies to any address | no |
 | `firewall-delete RULE` | Removes a firewall rule by name or id | yes (rule name) |
+| `ssh-key-create --name NAME (--key KEY \| --key-file PATH) [--user USER]` | Installs a public SSH key for a server user (default `forge`). The key must be one public key line; a private key is rejected before anything is sent | no |
+| `ssh-key-delete KEY` | Removes an SSH key by name or id | yes (key name) |
 | `service SERVICE ACTION [--php-version phpNN]` | Runs a service action, checked against the table below before anything is sent. For `php`, the version defaults to the server's `php_version` | `stop` only (server name) |
 | `reboot [--power-cycle]` | Reboots the server, or power-cycles it at the provider | yes (server name) |
 | `daemon-create --name NAME --command CMD [--user forge\|root] [--directory DIR] [--processes N] [--site SITE] [--startsecs N] [--stopwaitsecs N] [--stopsignal SIG]` | Adds a background process (user default `forge`, 1 process). `--site` associates it with a site | no |

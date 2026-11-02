@@ -43,6 +43,7 @@ describe "Endpoints against docs/forge-openapi.json" do
     daemons: [-> { EP.daemons("my-org", 10) }],
     daemon_log: [-> { EP.daemon_log("my-org", 10, 30) }],
     firewall_rules: [-> { EP.firewall_rules("my-org", 10) }],
+    ssh_keys: [-> { EP.ssh_keys("my-org", 10) }],
     server_log: [-> { EP.server_log("my-org", 10, "nginx-access") }],
     server_jobs: [-> { EP.server_jobs("my-org", 10) }],
     site_jobs: [-> { EP.site_jobs("my-org", 10, 20) }],
@@ -62,6 +63,9 @@ describe "Endpoints against docs/forge-openapi.json" do
         -> { EP.create_firewall_rule("my-org", 10, name: "ssh-office", type: type, port: 22, ip_address: "203.0.113.7") }
       end,
     delete_firewall_rule: [-> { EP.delete_firewall_rule("my-org", 10, 30) }],
+    create_ssh_key: [-> { EP.create_ssh_key("my-org", 10, name: "laptop", key: "ssh-ed25519 AAAA me@example.com") },
+                     -> { EP.create_ssh_key("my-org", 10, name: "laptop", key: "ssh-ed25519 AAAA", user: "forge") }],
+    delete_ssh_key: [-> { EP.delete_ssh_key("my-org", 10, 46) }],
     service_action: EP::SERVICE_ACTIONS.flat_map do |service, actions|
       actions.map do |action|
         -> { EP.service_action("my-org", 10, service, action: action, version: service == "php" ? "php84" : nil) }

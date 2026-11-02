@@ -80,6 +80,8 @@ module ForgeCli
     end
     def firewall_rule(server_id, query) = pick_child(Endpoints.firewall_rules(org, server_id), query, "firewall rule")
 
+    def ssh_key(server_id, query) = pick_child(Endpoints.ssh_keys(org, server_id), query, "SSH key")
+
     # A scheduled job by name or id, on the server or (with site) on that site.
     def job(server_id, query, site: nil)
       request = site ? Endpoints.site_jobs(org, server_id, site[:site_id]) : Endpoints.server_jobs(org, server_id)

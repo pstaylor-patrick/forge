@@ -20,6 +20,7 @@ describe "write commands" do
   SECRET_ENV = "APP_KEY=base64:topsecret\nDB_PASSWORD=\"hunter2 x\"\n# note\n"
   SCRIPT = "cd /home/forge/example.com\ngit pull origin main\n"
   SECRETS = %w[topsecret hunter2].freeze
+  PUB_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBodyOnlyForTests0000000000000000 me@example.com"
 
   def client(deployment_statuses: %w[finished])
     statuses = deployment_statuses.dup
@@ -28,6 +29,7 @@ describe "write commands" do
                    "/orgs/my-org/sites" => [{ id: "20", type: "sites", attributes: { name: "example.com" },
                                               relationships: { server: { data: { type: "servers", id: "10" } } } }],
                    "#{SERVER}/firewall-rules" => [{ id: "45", type: "rules", attributes: { name: "ssh-office", port: "22" } }],
+                   "#{SERVER}/ssh-keys" => [{ id: "46", type: "keys", attributes: { name: "laptop", user: "forge" } }],
                    "#{SERVER}/background-processes" => [{ id: "30", type: "backgroundProcesses",
                                                           attributes: { command: "php artisan queue:work" } }],
                    "#{SERVER}/scheduled-jobs" => [{ id: "40", type: "scheduledJobs", attributes: { name: "scheduler", command: "php artisan schedule:run" } },
@@ -78,6 +80,8 @@ describe "write commands" do
     "firewall-create" => [["--name", "probe", "--port", "8443", "--ip", "203.0.113.7", "-d"], "POST",
                           "#{SERVER}/firewall-rules"],
     "firewall-delete" => [["ssh-office", "-d"], "DELETE", "#{SERVER}/firewall-rules/45"],
+    "ssh-key-create" => [["--name", "probe", "--key", PUB_KEY, "-d"], "POST", "#{SERVER}/ssh-keys"],
+    "ssh-key-delete" => [["laptop", "-d"], "DELETE", "#{SERVER}/ssh-keys/46"],
     "service" => [%w[nginx stop -d], "POST", "#{SERVER}/services/nginx/actions"],
     "reboot" => [["-d"], "POST", "#{SERVER}/actions"],
     "daemon-create" => [["--name", "probe", "--command", "php artisan probe", "-d"], "POST",
@@ -139,6 +143,7 @@ describe "write commands" do
       "deploy-script-set" => [["example.com", "--file", :script], "PUT", "#{SITE}/deployments/script", "example.com",
                               SITE_AFFECTED],
       "firewall-delete" => [["ssh-office"], "DELETE", "#{SERVER}/firewall-rules/45", "ssh-office", SERVER_AFFECTED],
+      "ssh-key-delete" => [["laptop"], "DELETE", "#{SERVER}/ssh-keys/46", "laptop", SERVER_AFFECTED],
       "service" => [%w[mysql stop], "POST", "#{SERVER}/services/mysql/actions", "web-1", SERVER_AFFECTED],
       "reboot" => [[], "POST", "#{SERVER}/actions", "web-1", SERVER_AFFECTED],
       "daemon-delete" => [["30"], "DELETE", "#{SERVER}/background-processes/30", "30", SERVER_AFFECTED],
@@ -383,6 +388,36 @@ describe "write commands" do
       fake = client
       assert_raises(ForgeCli::NotFoundError) { run_write("firewall-delete", ["nope", "--yes"], fake: fake) }
       assert_empty fake.performed
+    end
+  end
+
+  describe "ssh-key-create" do
+    it "sends name, key, and user (default forge), unguarded" do
+      run = run_write("ssh-key-create", ["--name", "probe", "--key", PUB_KEY])
+      assert_equal [["POST", "#{SERVER}/ssh-keys", { name: "probe", key: PUB_KEY, user: "forge" }]], sent(run)
+      assert_equal SERVER_AFFECTED, run[:result]
+    end
+
+    it "reads --key-file, strips the trailing newline, and takes --user" do
+      run = run_write("ssh-key-create", ["--name", "probe", "--key-file", script_file("#{PUB_KEY}\n"), "--user", "deployer"])
+      assert_equal({ name: "probe", key: PUB_KEY, user: "deployer" }, run[:client].performed.first.body)
+    end
+
+    it "rejects a missing name or key, both key flags, and a private key before any request" do
+      assert_rejected("ssh-key-create", ["--key", PUB_KEY], "--name is required")
+      assert_rejected("ssh-key-create", ["--name", "x"], "one of --key or --key-file is required")
+      assert_rejected("ssh-key-create", ["--name", "x", "--key", PUB_KEY, "--key-file", "/nope"], "not both")
+      assert_rejected("ssh-key-create", ["--name", "x", "--key-file", "/nonexistent/key.pub"], "not readable")
+      private_key = script_file("-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbg==\n-----END OPENSSH PRIVATE KEY-----\n")
+      assert_rejected("ssh-key-create", ["--name", "x", "--key-file", private_key], "single public key line")
+    end
+  end
+
+  describe "ssh-key-delete" do
+    it "names the key and server in the prompt" do
+      run = run_write("ssh-key-delete", ["46"], stdin: TtyInput.new("laptop\n"))
+      assert_includes run[:err], "delete SSH key 46 (laptop) on server web-1"
+      assert_equal [["DELETE", "#{SERVER}/ssh-keys/46", nil]], sent(run)
     end
   end
 

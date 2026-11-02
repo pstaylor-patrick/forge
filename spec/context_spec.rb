@@ -159,6 +159,7 @@ describe ForgeCli::Context do
                                 "#{base}/database/schemas" => [named(3, "app_db", "databases")],
                                 "#{base}/database/users" => [named(4, "app_user", "databaseUsers")],
                                 "#{base}/firewall-rules" => [named(5, "ssh-office", "firewallRules")],
+                                "#{base}/ssh-keys" => [named(9, "laptop", "keys")],
                                 "#{base}/scheduled-jobs" => [named(6, "Nightly", "scheduledJobs")],
                                 "#{base}/sites/100/scheduled-jobs" => [named(7, "Site job", "scheduledJobs")],
                                 "#{base}/background-processes" => [
@@ -176,6 +177,7 @@ describe ForgeCli::Context do
       assert_equal 3, ctx.schema(10, "app_db")[:id]
       assert_equal 4, ctx.db_user(10, "APP_USER")[:id]
       assert_equal 5, ctx.firewall_rule(10, "ssh-office")[:id]
+      assert_equal 9, ctx.ssh_key(10, "laptop")[:id]
       assert_equal 6, ctx.job(10, "Nightly")[:id]
       assert_equal 7, ctx.job(10, "7", site: site)[:id]
     end
